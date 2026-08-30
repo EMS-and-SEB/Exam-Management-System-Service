@@ -1,0 +1,341 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum StaffRole {
+  EXAM_ADMIN
+  INSTRUCTOR
+  INVIGILATOR
+  EXIT_EXAM_COORDINATOR
+}
+
+enum CourseStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum CohortStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum QuestionType {
+  TRUE_FALSE
+  MULTIPLE_CHOICE
+  MULTIPLE_SELECT
+  MATCHING
+  FILL_BLANK
+  WORKOUT
+}
+
+enum ExamType {
+  QUIZ
+  MIDTERM
+  FINAL
+  MOCK_EXIT
+}
+
+enum ExamStatus {
+  DRAFT
+  RELEASED
+  CLOSED
+}
+
+enum SessionStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+  FORCE_SUBMITTED
+  EXPIRED
+}
+
+enum IncidentCategory {
+  VIOLATION
+  MEDICAL
+  WITHDRAWAL
+  TECHNICAL
+  OTHER
+}
+
+enum IncidentResolution {
+  RESUMED
+  TERMINATED
+}
+
+model StudentDirectory {
+  id        String   @id @default(uuid()) @db.Uuid
+  studentId String   @unique
+  name      String
+  createdAt DateTime @default(now())
+
+  enrollments   Enrollment[]
+  cohortMembers CohortMember[]
+  examRosters   ExamRoster[]
+  examSessions  ExamSession[]
+}
+
+model StaffAccount {
+  id           String    @id @default(uuid()) @db.Uuid
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         StaffRole
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+
+  passwordResets    StaffPasswordReset[]
+  refreshTokens     RefreshToken[]
+  courses           Course[]
+  createdQuestions  Question[]
+  coordinatedCohorts Cohort[]
+  createdExams      Exam[]               @relation("ExamCreatedBy")
+  examInvigilators  ExamInvigilator[]
+  gradedAnswers     Answer[]
+  resolvedIncidents Incident[]           @relation("IncidentResolvedBy")
+  auditLogs         AuditLog[]
+  retentionPolicies RetentionPolicy[]
+}
+
+model StaffPasswordReset {
+  id                  String    @id @default(uuid()) @db.Uuid
+  staffId             String    @db.Uuid
+  codeHash            String
+  expiresAt           DateTime
+  consumedAt          DateTime?
+  resetTokenHash      String?
+  resetTokenExpiresAt DateTime?
+  resetTokenConsumedAt DateTime?
+
+  staff StaffAccount @relation(fields: [staffId], references: [id])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  staffId   String    @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  staff StaffAccount @relation(fields: [staffId], references: [id])
+}
+
+model Course {
+  id           String       @id @default(uuid()) @db.Uuid
+  name         String
+  instructorId String       @db.Uuid
+  status       CourseStatus @default(ACTIVE)
+  createdAt    DateTime     @default(now())
+
+  instructor  StaffAccount @relation(fields: [instructorId], references: [id])
+  enrollments Enrollment[]
+  questions   Question[]
+  exams       Exam[]
+}
+
+model Enrollment {
+  id        String    @id @default(uuid()) @db.Uuid
+  courseId  String    @db.Uuid
+  studentId String    @db.Uuid
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  course  Course           @relation(fields: [courseId], references: [id])
+  student StudentDirectory @relation(fields: [studentId], references: [id])
+}
+
+model Question {
+  id           String       @id @default(uuid()) @db.Uuid
+  courseId     String?      @db.Uuid
+  cohortId     String?      @db.Uuid
+  type         QuestionType
+  prompt       String       @db.Text
+  options      Json?
+  correctAnswer Json?
+  points       Int          @default(1) 
+  createdById  String       @db.Uuid
+  deletedAt    DateTime?
+  createdAt    DateTime     @default(now())
+
+  course    Course?       @relation(fields: [courseId], references: [id])
+  cohort    Cohort?       @relation(fields: [cohortId], references: [id])
+  createdBy StaffAccount  @relation(fields: [createdById], references: [id])
+}
+
+model Cohort {
+  id            String       @id @default(uuid()) @db.Uuid
+  name          String
+  coordinatorId String       @db.Uuid
+  status        CohortStatus @default(ACTIVE)
+  createdAt     DateTime     @default(now())
+
+  coordinator   StaffAccount   @relation(fields: [coordinatorId], references: [id])
+  cohortMembers CohortMember[]
+  questions     Question[]
+  exams         Exam[]
+}
+
+model CohortMember {
+  id        String   @id @default(uuid()) @db.Uuid
+  cohortId  String   @db.Uuid
+  studentId String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  cohort  Cohort           @relation(fields: [cohortId], references: [id])
+  student StudentDirectory @relation(fields: [studentId], references: [id])
+
+  @@unique([cohortId, studentId])
+}
+
+model Exam {
+  id              String     @id @default(uuid()) @db.Uuid
+  examType        ExamType
+  title           String
+  courseId        String?    @db.Uuid
+  cohortId        String?    @db.Uuid
+  durationMinutes Int?
+  scheduledStart  DateTime?
+  closedAt        DateTime?
+  dataPurgedAt    DateTime?
+  status          ExamStatus @default(DRAFT)
+  createdById     String     @db.Uuid
+  releasedAt      DateTime?
+  createdAt       DateTime   @default(now())
+
+  course           Course?           @relation(fields: [courseId], references: [id])
+  cohort           Cohort?           @relation(fields: [cohortId], references: [id])
+  createdBy        StaffAccount      @relation("ExamCreatedBy", fields: [createdById], references: [id])
+  examQuestions    ExamQuestion[]
+  examRosters      ExamRoster[]
+  examOTP          ExamOTP?
+  examInvigilators ExamInvigilator[]
+  examSessions     ExamSession[]
+}
+
+model ExamQuestion {
+  id               String       @id @default(uuid()) @db.Uuid
+  examId           String       @db.Uuid
+  sourceQuestionId String?      @db.Uuid
+  type             QuestionType
+  prompt           String       @db.Text
+  options          Json?
+  correctAnswer    Json?
+  points           Int
+  order            Int
+
+  exam    Exam     @relation(fields: [examId], references: [id])
+  answers Answer[]
+
+  @@unique([examId, order])
+}
+
+model ExamRoster {
+  id         String   @id @default(uuid()) @db.Uuid
+  examId     String   @db.Uuid
+  studentId  String   @db.Uuid
+  snapshotAt DateTime @default(now())
+
+  exam    Exam             @relation(fields: [examId], references: [id])
+  student StudentDirectory @relation(fields: [studentId], references: [id])
+
+  @@unique([examId, studentId])
+}
+
+model ExamOTP {
+  id          String   @id @default(uuid()) @db.Uuid
+  examId      String   @unique @db.Uuid
+  code        String
+  generatedAt DateTime @default(now())
+  expiresAt   DateTime
+
+  exam Exam @relation(fields: [examId], references: [id])
+}
+
+model ExamInvigilator {
+  id            String @id @default(uuid()) @db.Uuid
+  examId        String @db.Uuid
+  invigilatorId String @db.Uuid
+
+  exam        Exam         @relation(fields: [examId], references: [id])
+  invigilator StaffAccount @relation(fields: [invigilatorId], references: [id])
+
+  @@unique([examId, invigilatorId])
+}
+
+model ExamSession {
+  id            String        @id @default(uuid()) @db.Uuid
+  examId        String        @db.Uuid
+  studentId     String        @db.Uuid
+  status        SessionStatus @default(NOT_STARTED)
+  startedAt     DateTime?
+  endsAt        DateTime?
+  submittedAt   DateTime?
+  questionOrder Json?
+  optionOrder   Json?
+  lastPolledAt  DateTime?
+
+  exam      Exam             @relation(fields: [examId], references: [id])
+  student   StudentDirectory @relation(fields: [studentId], references: [id])
+  answers   Answer[]
+  incidents Incident[]
+
+  @@unique([examId, studentId])
+}
+
+
+model Answer {
+  id             String    @id @default(uuid()) @db.Uuid
+  sessionId      String    @db.Uuid
+  examQuestionId String    @db.Uuid
+  responseData   Json?
+  isCorrect      Boolean?
+  pointsAwarded  Int?
+  gradedById     String?   @db.Uuid
+  gradedAt       DateTime?
+
+  session      ExamSession  @relation(fields: [sessionId], references: [id])
+  examQuestion ExamQuestion @relation(fields: [examQuestionId], references: [id])
+  gradedBy     StaffAccount? @relation(fields: [gradedById], references: [id])
+
+  @@unique([sessionId, examQuestionId])
+}
+
+model Incident {
+  id               String              @id @default(uuid()) @db.Uuid
+  sessionId        String              @db.Uuid
+  category         IncidentCategory
+  detectedAt       DateTime            @default(now())
+  resolvedById     String?             @db.Uuid
+  resolution       IncidentResolution?
+  resolutionReason String?             @db.Text
+  resolvedAt       DateTime?
+
+  session    ExamSession   @relation(fields: [sessionId], references: [id])
+  resolvedBy StaffAccount? @relation("IncidentResolvedBy", fields: [resolvedById], references: [id])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  entityType String
+  entityId   String   @db.Uuid
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor StaffAccount? @relation(fields: [actorId], references: [id])
+}
+
+model RetentionPolicy {
+  id                 String   @id @default(uuid()) @db.Uuid
+  resultRetentionDays Int      @default(730)
+  updatedById        String   @db.Uuid
+  updatedAt          DateTime @updatedAt
+
+  updatedBy StaffAccount @relation(fields: [updatedById], references: [id])
+}
