@@ -5,10 +5,4 @@ import { Module } from '@nestjs/common';
   providers: [],
   exports: [],
 })
-
-export class CohortsModule {}
-
-
-/*
-import students logic from students module.
-*/
+export class RetentionPolicyModule {}

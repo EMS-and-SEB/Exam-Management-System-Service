@@ -6,3 +6,7 @@ import { Module } from '@nestjs/common';
   exports: [],
 })
 export class CoursesModule {}
+
+/*
+import students logic from students module.
+*/
