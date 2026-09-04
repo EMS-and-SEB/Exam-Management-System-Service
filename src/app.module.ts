@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import {ConfigModule } from '@nestjs/config'
+import { PrismaModule } from './prisma/prisma.module.js';
 
 import configuration from './config/configuration.js';
 import { envSchema } from './config/env.validation.js';
@@ -24,6 +25,7 @@ import { envSchema } from './config/env.validation.js';
       load: [configuration],
       validationSchema: envSchema,
     }),
+    PrismaModule,
     // AuthModule,
     // StaffModule,
     // StudentsModule,
