@@ -1,3 +1,0 @@
-/*
-Some APIs share a common implementations.
-*/

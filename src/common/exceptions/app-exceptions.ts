@@ -26,4 +26,8 @@ export class AppException extends HttpException {
   static conflict(message: string, details?: unknown) {
     return new AppException(ErrorCode.CONFLICT, message, HttpStatus.CONFLICT, details);
   }
+
+  static internal(message = 'Something went wrong. Please try again later.') {
+    return new AppException(ErrorCode.INTERNAL_ERROR, message, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 }
