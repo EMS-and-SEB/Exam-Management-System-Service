@@ -7,45 +7,66 @@ import { CreateQuestionsDto, UpdateQuestionDto } from './validation/questions.dt
 
 @Controller()
 export class QuestionsController {
-  constructor(private readonly service: QuestionsService) {}
+  constructor(private readonly questionsService: QuestionsService) {}
 
   @Post('courses/:courseId/questions')
   @Roles(StaffRole.INSTRUCTOR)
-  async createCourse(@Param('courseId') courseId: string, @CurrentUser() user: JwtPayload, @Body() dto: CreateQuestionsDto) {
-    return { questions: await this.service.createForCourse(courseId, user.sub, dto) };
+  createForCourse(
+    @Param('courseId') courseId: string,
+    @Body() dto: CreateQuestionsDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.questionsService.createMany({ courseId }, dto.type, dto.questions, {
+      staffId: user.sub,
+      role: user.role,
+    });
   }
 
   @Get('courses/:courseId/questions')
   @Roles(StaffRole.INSTRUCTOR)
   async listCourse(@Param('courseId') courseId: string, @CurrentUser() user: JwtPayload) {
-    return { questions: await this.service.listForCourse(courseId, user.sub) };
+    return this.questionsService.findAllForParent({ courseId }, { staffId: user.sub, role: user.role });
   }
 
   @Post('cohorts/:cohortId/questions')
   @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
-  async createCohort(@Param('cohortId') cohortId: string, @CurrentUser() user: JwtPayload, @Body() dto: CreateQuestionsDto) {
-    return { questions: await this.service.createForCohort(cohortId, user.sub, dto) };
+   createForCohort(
+    @Param('cohortId') cohortId: string,
+    @Body() dto: CreateQuestionsDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.questionsService.createMany({ cohortId }, dto.type, dto.questions, {
+      staffId: user.sub,
+      role: user.role,
+    });
   }
 
   @Get('cohorts/:cohortId/questions')
   @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
   async listCohort(@Param('cohortId') cohortId: string, @CurrentUser() user: JwtPayload) {
-    return { questions: await this.service.listForCohort(cohortId, user.sub) };
+    return this.questionsService.findAllForParent({ cohortId }, { staffId: user.sub, role: user.role });
   }
 
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
   @Get('questions/:questionId')
-  async get(@Param('questionId') questionId: string, @CurrentUser() user: JwtPayload) {
-    return { question: await this.service.get(questionId, user.sub, user.role) };
+  findOne(@Param('questionId') questionId: string, @CurrentUser() user: JwtPayload) {
+    return this.questionsService.findOne(questionId, { staffId: user.sub, role: user.role });
   }
 
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
   @Patch('questions/:questionId')
-  async update(@Param('questionId') questionId: string, @CurrentUser() user: JwtPayload, @Body() dto: UpdateQuestionDto) {
-    return { question: await this.service.update(questionId, user.sub, user.role, dto) };
+  update(
+    @Param('questionId') questionId: string,
+    @Body() dto: UpdateQuestionDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.questionsService.update(questionId, dto, { staffId: user.sub, role: user.role });
   }
 
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
   @Delete('questions/:questionId')
   async remove(@Param('questionId') questionId: string, @CurrentUser() user: JwtPayload) {
-    await this.service.remove(questionId, user.sub, user.role);
+    await this.questionsService.remove(questionId, { staffId: user.sub, role: user.role });
     return { success: true };
   }
 }

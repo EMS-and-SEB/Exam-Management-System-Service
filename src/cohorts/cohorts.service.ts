@@ -1,97 +1,145 @@
 import { Injectable } from '@nestjs/common';
-import { CohortStatus, StaffRole } from '../generated/prisma/client.js';
+import { CohortStatus, StaffRole, ExamStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
-import { CohortAccessService } from '../common/guards/cohort-access.js';
-import { RosterMembershipService } from '../common/roster-membership/roster-membership.service.js';
-import { CsvImportService } from '../common/csv-import/csv-import.service.js';
-import type { AddMemberDto, CreateCohortDto, SelectMembersDto, UpdateCohortDto } from './validation/cohorts.dto.js';
+import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
+import { parseRosterCsv } from '../common/utils/csv-parser.util.js';
+import { StudentsService } from '../students/students.service.js';
+
+interface CallerContext {
+  staffId: string;
+  role: StaffRole;
+}
 
 @Injectable()
 export class CohortsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly access: CohortAccessService,
-    private readonly roster: RosterMembershipService,
-    private readonly csv: CsvImportService,
+    private readonly studentsService: StudentsService
   ) {}
 
-  async create(dto: CreateCohortDto) {
-    const coordinator = await this.prisma.staffAccount.findUnique({ where: { id: dto.coordinatorId }, select: { id: true, role: true, isActive: true } });
-    if (!coordinator || coordinator.role !== StaffRole.EXIT_EXAM_COORDINATOR || !coordinator.isActive) {
-      throw AppException.badRequest('coordinatorId must reference an active Exit Exam Coordinator.');
-    }
-    return this.prisma.cohort.create({ data: { name: dto.name, coordinatorId: dto.coordinatorId } });
+  async create(name: string, coordinatorId: string) {
+    return this.prisma.cohort.create({ data: { name, coordinatorId } });
   }
 
-  async list(userId: string, role: StaffRole) {
-    const where = role === StaffRole.EXAM_ADMIN ? {} : { coordinatorId: userId };
-    return this.prisma.cohort.findMany({ where, orderBy: { createdAt: 'desc' }, include: { coordinator: { select: { id: true, name: true, email: true } } } });
-  }
-
-  async get(id: string, userId: string, role: StaffRole) {
-    await this.access.getOwnedCohort(id, userId, role);
-    return this.prisma.cohort.findUnique({ where: { id }, include: { coordinator: { select: { id: true, name: true, email: true } } } });
-  }
-
-  async update(id: string, dto: UpdateCohortDto) {
-    const cohort = await this.prisma.cohort.findUnique({ where: { id } });
-    if (!cohort) throw AppException.notFound('Cohort not found.');
-    if (dto.coordinatorId) {
-      const coordinator = await this.prisma.staffAccount.findUnique({ where: { id: dto.coordinatorId }, select: { role: true, isActive: true } });
-      if (!coordinator || coordinator.role !== StaffRole.EXIT_EXAM_COORDINATOR || !coordinator.isActive) throw AppException.badRequest('coordinatorId must reference an active Exit Exam Coordinator.');
-    }
-    return this.prisma.cohort.update({
-      where: { id },
-      data: { name: dto.name, coordinatorId: dto.coordinatorId, status: dto.status as CohortStatus | undefined },
+   async findAll(caller: CallerContext) {
+    return this.prisma.cohort.findMany({
+      where: buildOwnerScopeWhere(caller.role, caller.staffId, 'coordinatorId'),
     });
   }
 
-  async addMember(id: string, userId: string, dto: AddMemberDto) {
-    await this.access.getOwnedCohort(id, userId, StaffRole.EXIT_EXAM_COORDINATOR);
-    const member = await this.roster.addOne(id, dto.studentId, dto.name);
-    return member;
+  async findOne(id: string, caller: CallerContext) {
+    return this.assertOwnsCohort(id, caller);
   }
 
-  async selectMembers(id: string, userId: string, dto: SelectMembersDto) {
-    await this.access.getOwnedCohort(id, userId, StaffRole.EXIT_EXAM_COORDINATOR);
-    return this.roster.addKnown(id, dto.studentIds);
+   async update(id: string, data: { name?: string; coordinatorId?: string; status?: CohortStatus }) {
+    const cohort = await this.prisma.cohort.findUnique({ where: { id } });
+    if (!cohort) throw AppException.notFound('Cohort not found.');
+    return this.prisma.cohort.update({ where: { id }, data });
   }
 
-  async listMembers(id: string, userId: string, role: StaffRole) {
-    await this.access.getOwnedCohort(id, userId, role);
-    return this.roster.list(id);
+  async addOne(cohortId: string, studentId: string, name: string, caller: CallerContext) {
+    await this.assertOwnsCohort(cohortId, caller);
+    const student = await this.studentsService.findOrCreateByStudentId(studentId, name);
+    const member = await this.prisma.cohortMember.create({ data: { cohortId, studentId: student.id } });
+    return { member };
   }
 
-  async removeMember(id: string, studentId: string, userId: string) {
-    await this.access.getOwnedCohort(id, userId, StaffRole.EXIT_EXAM_COORDINATOR);
-    await this.roster.remove(id, studentId);
-  }
+  async addSelected(cohortId: string, studentIds: string[], caller: CallerContext) {
+    await this.assertOwnsCohort(cohortId, caller);
 
-  async bulkMembers(id: string, userId: string, file: { buffer?: Buffer }) {
-    await this.access.getOwnedCohort(id, userId, StaffRole.EXIT_EXAM_COORDINATOR);
-    if (!file?.buffer) throw AppException.badRequest('CSV file is required.');
-    const rows = await this.csv.parseStudents(file.buffer);
-    let created = 0, alreadyExisted = 0, added = 0;
-    const errors: { row: number; reason: string }[] = [];
+    const uniqueIds = [...new Set(studentIds)];
 
-    for (const row of rows) {
-      if (!row.studentId || !row.name) { errors.push({ row: row.row, reason: 'studentId and name are required.' }); continue; }
-      try {
-        const existing = await this.prisma.studentDirectory.findUnique({ where: { studentId: row.studentId }, select: { id: true } });
-        const student = existing
-          ? existing
-          : await this.prisma.studentDirectory.create({ data: { studentId: row.studentId, name: row.name }, select: { id: true } });
-        if (existing) alreadyExisted++;
-        const member = await this.prisma.cohortMember.findUnique({ where: { cohortId_studentId: { cohortId: id, studentId: student.id } }, select: { id: true } });
-        if (member) { errors.push({ row: row.row, reason: 'Student is already a member of this cohort.' }); continue; }
-        await this.prisma.cohortMember.create({ data: { cohortId: id, studentId: student.id } });
-        added++;
-        if (!existing) created++;
-      } catch (error: any) {
-        errors.push({ row: row.row, reason: error?.message ?? 'Unable to import row.' });
-      }
+    const existing = await this.prisma.cohortMember.findMany({
+      where: { cohortId, studentId: { in: uniqueIds } },
+      select: { studentId: true },
+    });
+    const existingSet = new Set(existing.map((m) => m.studentId));
+    const toAdd = uniqueIds.filter((id) => !existingSet.has(id));
+
+    if (toAdd.length > 0) {
+      await this.prisma.cohortMember.createMany({
+        data: toAdd.map((studentId) => ({ cohortId, studentId })),
+        skipDuplicates: true,
+      });
     }
-    return { created, alreadyExisted, added, errors };
+
+    return { added: toAdd.length, alreadyMember: existingSet.size };
+  }
+
+  async addBulk(cohortId: string, file: Express.Multer.File, caller: CallerContext) {
+    await this.assertOwnsCohort(cohortId, caller);
+    const { rows, errors } = parseRosterCsv(file.buffer);
+    if (rows.length === 0) return { created: 0, alreadyExisted: 0, added: 0, errors };
+
+    const studentIds = [...new Set(rows.map((r) => r.studentId))];
+
+    const existingStudents = await this.prisma.studentDirectory.findMany({
+      where: { studentId: { in: studentIds } },
+    });
+    const knownIds = new Set(existingStudents.map((s) => s.studentId));
+    const newRows = [...new Map(
+      rows.filter((r) => !knownIds.has(r.studentId)).map((r) => [r.studentId, r]),
+    ).values()];
+
+    const existingMembers = await this.prisma.cohortMember.findMany({
+      where: { cohortId },
+      select: { studentId: true },
+    });
+    const alreadyMemberSet = new Set(existingMembers.map((m) => m.studentId));
+
+    const [, toAdd] = await this.prisma.$transaction(async (tx) => {
+      const created = newRows.length > 0
+        ? await tx.studentDirectory.createManyAndReturn({
+            data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
+            skipDuplicates: true,
+          })
+        : [];
+
+      const allStudents = [...existingStudents, ...created];
+      const toAddList = allStudents.filter((s) => !alreadyMemberSet.has(s.id));
+
+      if (toAddList.length > 0) {
+        await tx.cohortMember.createMany({
+          data: toAddList.map((s) => ({ cohortId, studentId: s.id })),
+          skipDuplicates: true,
+        });
+      }
+
+      return [created, toAddList] as const;
+    });
+
+    return { created: newRows.length, alreadyExisted: existingStudents.length, added: toAdd.length, errors };
+  }
+
+  async listMembers(cohortId: string, caller: CallerContext) {
+    await this.assertOwnsCohort(cohortId, caller);
+    return this.prisma.cohortMember.findMany({
+      where: { cohortId },
+      include: { student: true },
+    });
+  }
+
+  async removeMember(cohortId: string, studentId: string, caller: CallerContext) {
+    await this.assertOwnsCohort(cohortId, caller);
+
+    const member = await this.prisma.cohortMember.findFirst({ where: { cohortId, studentId } });
+    if (!member) throw AppException.notFound('Cohort member not found.');
+
+    const hasReleasedExam = await this.prisma.exam.findFirst({
+      where: { cohortId, status: { in: [ExamStatus.RELEASED, ExamStatus.CLOSED] } },
+    });
+    if (hasReleasedExam) {
+      throw AppException.conflict('This student cannot be removed — the cohort\'s exit exam has already been released.');
+    }
+
+    await this.prisma.cohortMember.delete({ where: { id: member.id } });
+  }
+
+  private async assertOwnsCohort(cohortId: string, caller: CallerContext) {
+    const cohort = await this.prisma.cohort.findUnique({ where: { id: cohortId } });
+    if (!cohort) throw AppException.notFound('Cohort not found.');
+    assertOwnsOrIsAdmin(cohort.coordinatorId, caller.staffId, caller.role);
+    return cohort;
   }
 }

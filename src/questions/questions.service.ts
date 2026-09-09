@@ -2,151 +2,133 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { QuestionType, StaffRole } from '../generated/prisma/client.js';
-import type { CreateQuestionsDto, UpdateQuestionDto } from './validation/questions.dto.js';
+import { questionInputSchema, QuestionInput } from './validation/questions.dto.js';
+
+interface ParentRef {
+  courseId?: string;
+  cohortId?: string;
+}
+
+interface CallerContext {
+  staffId: string;
+  role: StaffRole;
+}
 
 @Injectable()
 export class QuestionsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createForCourse(courseId: string, userId: string, dto: CreateQuestionsDto) {
-    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
-    if (!course) throw AppException.notFound('Course not found.');
-    if (course.instructorId !== userId) throw AppException.forbidden();
-    const type = dto.type as QuestionType;
-    dto.questions.forEach((q) => this.validateQuestion(type, q));
-    const questions = await this.prisma.$transaction(dto.questions.map((q) => this.prisma.question.create({
-      data: { courseId, cohortId: null, type, prompt: q.prompt, options: q.options as any, correctAnswer: q.correctAnswer as any, points: q.points, createdById: userId },
-    })));
-    return questions;
+  async createMany(parent: ParentRef, type: QuestionType, questions: QuestionInput[], caller: CallerContext) {
+    await this.assertOwnsParent(parent, caller);
+
+    const created = await this.prisma.question.createManyAndReturn({
+      data: questions.map((q) => ({
+        courseId: parent.courseId,
+        cohortId: parent.cohortId,
+        type,
+        prompt: q.prompt,
+        options: 'options' in q ? q.options : undefined,
+        correctAnswer: 'correctAnswer' in q ? q.correctAnswer : undefined,
+        points: q.points,
+        createdById: caller.staffId,
+      })),
+    });
+
+    return { questions: created };
   }
 
-  async listForCourse(courseId: string, userId: string) {
-    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
-    if (!course) throw AppException.notFound('Course not found.');
-    if (course.instructorId !== userId) throw AppException.forbidden();
-    return this.prisma.question.findMany({ where: { courseId, deletedAt: null }, orderBy: { createdAt: 'asc' } });
-  }
-
-  async createForCohort(cohortId: string, userId: string, dto: CreateQuestionsDto) {
-    const cohort = await this.prisma.cohort.findUnique({ where: { id: cohortId } });
-    if (!cohort) throw AppException.notFound('Cohort not found.');
-    if (cohort.coordinatorId !== userId) throw AppException.forbidden();
-    const type = dto.type as QuestionType;
-    dto.questions.forEach((q) => this.validateQuestion(type, q));
-    const questions = await this.prisma.$transaction(dto.questions.map((q) => this.prisma.question.create({
-      data: { cohortId, courseId: null, type, prompt: q.prompt, options: q.options as any, correctAnswer: q.correctAnswer as any, points: q.points, createdById: userId },
-    })));
-    return questions;
-  }
-
-  async listForCohort(cohortId: string, userId: string) {
-    const cohort = await this.prisma.cohort.findUnique({ where: { id: cohortId } });
-    if (!cohort) throw AppException.notFound('Cohort not found.');
-    if (cohort.coordinatorId !== userId) throw AppException.forbidden();
-    return this.prisma.question.findMany({ where: { cohortId, deletedAt: null }, orderBy: { createdAt: 'asc' } });
-  }
-
-  async get(questionId: string, userId: string, role: StaffRole) {
-    const question = await this.prisma.question.findUnique({ where: { id: questionId } });
-    if (!question || question.deletedAt) throw AppException.notFound('Question not found.');
-    await this.assertOwner(question, userId, role);
-    return question;
-  }
-
-  async update(questionId: string, userId: string, role: StaffRole, dto: UpdateQuestionDto) {
-    const question = await this.prisma.question.findUnique({ where: { id: questionId } });
-    if (!question || question.deletedAt) throw AppException.notFound('Question not found.');
-    await this.assertOwner(question, userId, role);
-
-    const next = {
-      prompt: dto.prompt ?? question.prompt,
-      options: dto.options !== undefined ? dto.options : question.options,
-      correctAnswer: dto.correctAnswer !== undefined ? dto.correctAnswer : question.correctAnswer,
-      points: dto.points ?? question.points,
-    };
-    this.validateQuestion(question.type, next);
-
-    const used = await this.prisma.examQuestion.findFirst({ where: { sourceQuestionId: questionId }, select: { id: true } });
-    if (used) {
-      const replacement = await this.prisma.question.create({
-        data: {
-          courseId: question.courseId,
-          cohortId: question.cohortId,
-          type: question.type,
-          prompt: next.prompt,
-          options: next.options as any,
-          correctAnswer: next.correctAnswer as any,
-          points: next.points,
-          createdById: userId,
-        },
-      });
-      return replacement;
-    }
-
-    return this.prisma.question.update({
-      where: { id: questionId },
-      data: { prompt: next.prompt, options: next.options as any, correctAnswer: next.correctAnswer as any, points: next.points },
+  async findAllForParent(parent: ParentRef, caller: CallerContext) {
+    await this.assertOwnsParent(parent, caller);
+    return this.prisma.question.findMany({
+      where: { courseId: parent.courseId, cohortId: parent.cohortId, deletedAt: null },
     });
   }
 
-  async remove(questionId: string, userId: string, role: StaffRole) {
-    const question = await this.prisma.question.findUnique({ where: { id: questionId } });
-    if (!question || question.deletedAt) throw AppException.notFound('Question not found.');
-    await this.assertOwner(question, userId, role);
-    const used = await this.prisma.examQuestion.findFirst({ where: { sourceQuestionId: questionId }, select: { id: true } });
-    if (used) await this.prisma.question.update({ where: { id: questionId }, data: { deletedAt: new Date() } });
-    else await this.prisma.question.delete({ where: { id: questionId } });
+  async findOne(questionId: string, caller: CallerContext) {
+    const question = await this.getOwnedQuestion(questionId, caller);
+    return question;
   }
 
-  private async assertOwner(question: any, userId: string, role: StaffRole) {
-    if (question.courseId) {
-      const course = await this.prisma.course.findUnique({ where: { id: question.courseId }, select: { instructorId: true } });
-      if (role !== StaffRole.INSTRUCTOR || !course || course.instructorId !== userId) throw AppException.forbidden();
-      return;
+  async update(questionId: string, patch: Partial<QuestionInput>, caller: CallerContext) {
+    const question = await this.getOwnedQuestion(questionId, caller);
+
+    const candidate = questionInputSchema.parse({
+      type: question.type,
+      prompt: patch.prompt ?? question.prompt,
+      options: 'options' in patch ? patch.options : question.options,
+      correctAnswer: 'correctAnswer' in patch ? patch.correctAnswer : question.correctAnswer,
+      points: patch.points ?? question.points,
+    });
+
+    const data = {
+      prompt: candidate.prompt,
+      options: 'options' in candidate ? candidate.options : undefined,
+      correctAnswer: 'correctAnswer' in candidate ? candidate.correctAnswer : undefined,
+      points: candidate.points,
+    };
+
+    const usedInExam = await this.prisma.examQuestion.findFirst({ where: { sourceQuestionId: questionId } });
+
+    if (question.cohortId && usedInExam) {
+      return this.prisma.question.create({
+        data: {
+          cohortId: question.cohortId,
+          type: question.type,
+          createdById: question.createdById,
+          ...data,
+        },
+      });
     }
-    if (question.cohortId) {
-      const cohort = await this.prisma.cohort.findUnique({ where: { id: question.cohortId }, select: { coordinatorId: true } });
-      if (role !== StaffRole.EXIT_EXAM_COORDINATOR || !cohort || cohort.coordinatorId !== userId) throw AppException.forbidden();
-      return;
-    }
-    throw AppException.forbidden();
+
+    return this.prisma.question.update({ where: { id: questionId }, data });
   }
 
-  private validateQuestion(type: QuestionType, q: { prompt: string; options?: unknown; correctAnswer?: unknown; points: number }) {
-    if (!Number.isInteger(q.points) || q.points <= 0) throw AppException.badRequest('Points must be a positive integer.');
-    if (!q.prompt?.trim()) throw AppException.badRequest('Prompt is required.');
+  async remove(questionId: string, caller: CallerContext) {
+    await this.getOwnedQuestion(questionId, caller);
 
-    const isObject = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
-    const options = q.options as any;
-    const answer = q.correctAnswer as any;
-    const optionIds = (items: any[]) => new Set(items.map((x) => x?.id));
+    const usedInExam = await this.prisma.examQuestion.findFirst({ where: { sourceQuestionId: questionId } });
 
-    switch (type) {
-      case QuestionType.TRUE_FALSE:
-        if (typeof answer !== 'boolean') throw AppException.badRequest('TRUE_FALSE correctAnswer must be boolean.');
-        break;
-      case QuestionType.MULTIPLE_CHOICE:
-        if (!Array.isArray(options) || options.length < 2 || options.some((x) => !x?.id || typeof x.text !== 'string')) throw AppException.badRequest('MULTIPLE_CHOICE options must be [{id,text}] with at least two options.');
-        if (typeof answer !== 'string' || !optionIds(options).has(answer)) throw AppException.badRequest('MULTIPLE_CHOICE correctAnswer must be an option id.');
-        break;
-      case QuestionType.MULTIPLE_SELECT:
-        if (!Array.isArray(options) || options.length < 2 || options.some((x) => !x?.id || typeof x.text !== 'string')) throw AppException.badRequest('MULTIPLE_SELECT options must be [{id,text}] with at least two options.');
-        if (!Array.isArray(answer) || !answer.length || answer.some((id) => typeof id !== 'string' || !optionIds(options).has(id))) throw AppException.badRequest('MULTIPLE_SELECT correctAnswer must be an array of option ids.');
-        break;
-      case QuestionType.MATCHING:
-        if (!isObject(options) || !Array.isArray(options.left) || !Array.isArray(options.right) || options.left.length < 1 || options.right.length < 1 || [...options.left, ...options.right].some((x) => !x?.id || typeof x.text !== 'string')) throw AppException.badRequest('MATCHING options must contain left and right [{id,text}] lists.');
-        if (!Array.isArray(answer) || answer.some((p) => !p?.leftId || !p?.rightId)) throw AppException.badRequest('MATCHING correctAnswer must be [{leftId,rightId}].');
-        if (answer.some((p) => !optionIds(options.left).has(p.leftId) || !optionIds(options.right).has(p.rightId))) throw AppException.badRequest('MATCHING answers must reference valid option ids.');
-        break;
-      case QuestionType.FILL_BLANK:
-        const blanks = [...q.prompt.matchAll(/\{\{\d+\}\}/g)].length;
-        if (!blanks) throw AppException.badRequest('FILL_BLANK prompt must contain blanks such as {{1}}.');
-        if (!Array.isArray(answer) || answer.length !== blanks || answer.some((a) => !Array.isArray(a) || a.length < 1 || a.some((v) => typeof v !== 'string'))) throw AppException.badRequest('FILL_BLANK correctAnswer must contain accepted answers for each blank.');
-        break;
-      case QuestionType.WORKOUT:
-        if (q.options !== undefined && q.options !== null) throw AppException.badRequest('WORKOUT questions do not use options.');
-        if (q.correctAnswer !== undefined && q.correctAnswer !== null) throw AppException.badRequest('WORKOUT questions do not use correctAnswer.');
-        break;
+    if (usedInExam) {
+      await this.prisma.question.update({ where: { id: questionId }, data: { deletedAt: new Date() } });
+    } else {
+      await this.prisma.question.delete({ where: { id: questionId } });
     }
+  }
+
+  private async getOwnedQuestion(questionId: string, caller: CallerContext) {
+    const question = await this.prisma.question.findUnique({
+      where: { id: questionId },
+      include: { course: true, cohort: true },
+    });
+    if (!question) throw AppException.notFound('Question not found.');
+
+    const ownerId = question.course?.instructorId ?? question.cohort?.coordinatorId;
+    if (ownerId !== caller.staffId) throw AppException.forbidden();
+
+    return question;
+  }
+
+  private async assertOwnsParent(parent: ParentRef, caller: CallerContext) {
+    if (parent.courseId) {
+      const course = await this.prisma.course.findUnique({ where: { id: parent.courseId } });
+      if (!course) throw AppException.notFound('Course not found.');
+      if (course.instructorId !== caller.staffId) throw AppException.forbidden();
+      if (course.status === 'ARCHIVED') {
+        throw AppException.conflict('This course is archived — no new questions can be added.');
+      }
+      return;
+    }
+
+    if (parent.cohortId) {
+      const cohort = await this.prisma.cohort.findUnique({ where: { id: parent.cohortId } });
+      if (!cohort) throw AppException.notFound('Cohort not found.');
+      if (cohort.coordinatorId !== caller.staffId) throw AppException.forbidden();
+      if (cohort.status === 'ARCHIVED') {
+        throw AppException.conflict('This cohort is archived — no new questions can be added.');
+      }
+      return;
+    }
+
+    throw AppException.badRequest('Either courseId or cohortId must be provided.');
   }
 }

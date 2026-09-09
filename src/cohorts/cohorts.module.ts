@@ -1,15 +1,12 @@
 import { Module } from '@nestjs/common';
 import { CohortsController } from './cohorts.controller.js';
 import { CohortsService } from './cohorts.service.js';
-import { PrismaModule } from '../prisma/prisma.module.js';
-import { CsvImportModule } from '../common/csv-import/csv-import.module.js';
-import { RosterMembershipModule } from '../common/roster-membership/roster-membership.module.js';
-import { CohortAccessService } from '../common/guards/cohort-access.js';
+import { StudentsModule } from '../students/students.module.js';
 
 @Module({
-  imports: [PrismaModule, CsvImportModule, RosterMembershipModule],
+  imports: [StudentsModule],
   controllers: [CohortsController],
-  providers: [CohortsService, CohortAccessService],
+  providers: [CohortsService],
   exports: [CohortsService],
 })
 export class CohortsModule {}
