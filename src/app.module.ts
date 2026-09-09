@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-
-import { PrismaModule } from './prisma/prisma.module.js';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module.js';
 import { AuthGuard } from './auth/guards/auth.guard.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
+import { PrismaModule } from './prisma/prisma.module.js';
+import { StaffModule } from './staff/staff.module.js';
+import { StudentsModule } from './students/students.module.js';
 
 import configuration from './config/configuration.js';
 import { envSchema } from './config/env.validation.js';
@@ -16,13 +17,10 @@ import { QuestionsModule } from './questions/questions.module.js';
 
 // Future modules
 // import { CoursesModule } from './courses/courses.module.js';
-// import { QuestionsModule } from './questions/questions.module.js';
 // import { ExamModule } from './exam/exam.module.js';
 // import { GradingModule } from './grading/grading.module.js';
 // import { IncidentsModule } from './incidents/incidents.module.js';
 // import { SessionsModule } from './sessions/sessions.module.js';
-// import { StaffModule } from './staff/staff.module.js';
-// import { StudentsModule } from './students/students.module.js';
 // import { AuditModule } from './audit/audit.module.js';
 
 @Module({
@@ -49,16 +47,16 @@ import { QuestionsModule } from './questions/questions.module.js';
 
     AuthModule,
 
-    CohortsModule,
+    // Staff and Student modules
+    StaffModule,
+    StudentsModule,
 
-    // Questions module is currently active
+    // Cohorts and Questions modules
+    CohortsModule,
     QuestionsModule,
 
     // Future modules
-    // StaffModule,
-    // StudentsModule,
     // CoursesModule,
-    // QuestionsModule,
     // ExamModule,
     // SessionsModule,
     // GradingModule,
