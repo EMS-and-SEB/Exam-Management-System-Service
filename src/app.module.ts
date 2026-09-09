@@ -12,16 +12,16 @@ import { StudentsModule } from './students/students.module.js';
 import configuration from './config/configuration.js';
 import { envSchema } from './config/env.validation.js';
 
-// import { AuditModule } from './audit/audit.module';
-// import { CohortsModule } from './cohorts/cohorts.module';
-// import { CoursesModule } from './courses/courses.module';
-// import { ExamModule } from './exam/exam.module';
-// import { GradingModule } from './grading/grading.module';
-// import { IncidentsModule } from './incidents/incidents.module';
-// import { QuestionsModule } from './questions/questions.module';
-// import { SessionsModule } from './sessions/sessions.module';
-// import { StaffModule } from './staff/staff.module';
-// import { StudentsModule } from './students/students.module';
+import { CohortsModule } from './cohorts/cohorts.module.js';
+import { QuestionsModule } from './questions/questions.module.js';
+
+// Future modules
+// import { CoursesModule } from './courses/courses.module.js';
+// import { ExamModule } from './exam/exam.module.js';
+// import { GradingModule } from './grading/grading.module.js';
+// import { IncidentsModule } from './incidents/incidents.module.js';
+// import { SessionsModule } from './sessions/sessions.module.js';
+// import { AuditModule } from './audit/audit.module.js';
 
 @Module({
   imports: [
@@ -31,6 +31,7 @@ import { envSchema } from './config/env.validation.js';
       load: [configuration],
       validate: (config) => envSchema.parse(config),
     }),
+
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -41,24 +42,41 @@ import { envSchema } from './config/env.validation.js';
         },
       ],
     }),
+
     PrismaModule,
+
     AuthModule,
-    AuthModule,
+
+    // Staff and Student modules
     StaffModule,
     StudentsModule,
-    // CohortsModule,
+
+    // Cohorts and Questions modules
+    CohortsModule,
+    QuestionsModule,
+
+    // Future modules
     // CoursesModule,
-    // QuestionsModule,
     // ExamModule,
     // SessionsModule,
     // GradingModule,
     // IncidentsModule,
     // AuditModule,
   ],
+
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_GUARD, useClass: AuthGuard },
-    { provide: APP_GUARD, useClass: RolesGuard },
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: AuthGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,
+    },
   ],
 })
 export class AppModule {}
