@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-
-import { PrismaModule } from './prisma/prisma.module.js';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module.js';
 import { AuthGuard } from './auth/guards/auth.guard.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
+import { PrismaModule } from './prisma/prisma.module.js';
+import { StaffModule } from './staff/staff.module.js';
+import { StudentsModule } from './students/students.module.js';
 
 import configuration from './config/configuration.js';
 import { envSchema } from './config/env.validation.js';
@@ -43,8 +44,8 @@ import { envSchema } from './config/env.validation.js';
     PrismaModule,
     AuthModule,
     AuthModule,
-    // StaffModule,
-    // StudentsModule,
+    StaffModule,
+    StudentsModule,
     // CohortsModule,
     // CoursesModule,
     // QuestionsModule,
