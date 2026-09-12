@@ -108,7 +108,7 @@ export class StudentsService {
         skip_empty_lines: true,
         trim: true,
       });
-    } catch (_err) {
+    } catch {
       throw AppException.badRequest('Invalid CSV format.');
     }
 
