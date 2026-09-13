@@ -6,21 +6,20 @@ import { AuthGuard } from './auth/guards/auth.guard.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
-
 import configuration from './config/configuration.js';
 import { envSchema } from './config/env.validation.js';
 
 import { AuthModule } from './auth/auth.module.js';
+import { CohortsModule } from './cohorts/cohorts.module.js';
+import { CoursesModule } from './courses/courses.module.js';
+import { GradingModule } from './grading/grading.module.js';
+import { QuestionsModule } from './questions/questions.module.js';
+import { SessionsModule } from './sessions/sessions.module.js';
 import { StaffModule } from './staff/staff.module.js';
 import { StudentsModule } from './students/students.module.js';
-import { CohortsModule } from './cohorts/cohorts.module.js';
-import { QuestionsModule } from './questions/questions.module.js';
-import { CoursesModule } from './courses/courses.module.js';
 
 // import { ExamModule } from './exam/exam.module.js';
-// import { GradingModule } from './grading/grading.module.js';
 // import { IncidentsModule } from './incidents/incidents.module.js';
-// import { SessionsModule } from './sessions/sessions.module.js';
 // import { AuditModule } from './audit/audit.module.js';
 
 @Module({
@@ -50,9 +49,9 @@ import { CoursesModule } from './courses/courses.module.js';
     CohortsModule,
     QuestionsModule,
     CoursesModule,
+    SessionsModule,
+    GradingModule,
     // ExamModule,
-    // SessionsModule,
-    // GradingModule,
     // IncidentsModule,
     // AuditModule,
   ],

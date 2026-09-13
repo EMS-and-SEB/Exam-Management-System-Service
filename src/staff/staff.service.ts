@@ -34,7 +34,7 @@ export class StaffService {
       },
     });
 
-    const { passwordHash: _omit, ...safe } = staff;
+    const { passwordHash: _passwordHash, ...safe } = staff;
     return safe;
   }
 
@@ -61,7 +61,9 @@ export class StaffService {
       this.prisma.staffAccount.count({ where }),
     ]);
 
-    const safeData = data.map(({ passwordHash, ...safe }) => safe);
+    const safeData = data.map(
+      ({ passwordHash: _passwordHash, ...safe }) => safe,
+    );
 
     return {
       staff: safeData,
@@ -77,7 +79,7 @@ export class StaffService {
     if (!staff) {
       throw AppException.notFound('Staff member not found.');
     }
-    const { passwordHash, ...safe } = staff;
+    const { passwordHash: _passwordHash, ...safe } = staff;
     return safe;
   }
 
@@ -109,7 +111,7 @@ export class StaffService {
       },
     });
 
-    const { passwordHash, ...safe } = updated;
+    const { passwordHash: _passwordHash, ...safe } = updated;
     return safe;
   }
 
