@@ -16,6 +16,7 @@ export default () => ({
     ttlMs: Number(process.env.THROTTLE_TTL_MS ?? 60_000),
     limit: Number(process.env.THROTTLE_LIMIT ?? 100),
   },
+
   email: {
     from: process.env.EMAIL_FROM,
     smtp: {
@@ -23,5 +24,10 @@ export default () => ({
       port: Number(process.env.SMTP_PORT ?? 1025),
     },
     resendApiKey: process.env.RESEND_API_KEY,
+  },
+  
+  seb: {
+    clientKey: process.env.SEB_CLIENT_KEY,
+    handshakeSecret: process.env.SEB_HANDSHAKE_SECRET,
   },
 });

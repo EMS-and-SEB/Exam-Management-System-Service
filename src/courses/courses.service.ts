@@ -5,6 +5,8 @@ import { AppException } from '../common/exceptions/app-exceptions.js';
 import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
 import { parseRosterCsv } from '../common/utils/csv-parser.util.js';
 import { StaffRole, CourseStatus } from '../generated/prisma/client.js';
+import { AuditService } from '../audit/audit.service.js';
+import { AuditAction } from '../audit/audit.const.js';
 
 interface CallerContext {
   staffId: string;
@@ -15,11 +17,19 @@ interface CallerContext {
 export class CoursesService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly auditService: AuditService,
     private readonly studentsService: StudentsService,
   ) {}
 
-  create(name: string, instructorId: string) {
-    return this.prisma.course.create({ data: { name, instructorId } });
+  async create(name: string, instructorId: string, callerId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const course = await tx.course.create({ data: { name, instructorId } });
+      await this.auditService.log(
+        { actorId: callerId, action: AuditAction.COURSE_CREATED, entityType: 'Course', entityId: course.id },
+        tx,
+      );
+      return course;
+    });
   }
 
   findAll(caller: CallerContext) {
@@ -33,10 +43,21 @@ export class CoursesService {
     return course;
   }
 
-  async update(id: string, data: { name?: string; instructorId?: string; status?: CourseStatus }) {
+ async update(id: string, data: { name?: string; instructorId?: string; status?: CourseStatus }, callerId: string) {
     const course = await this.prisma.course.findUnique({ where: { id } });
     if (!course) throw AppException.notFound('Course not found.');
-    return this.prisma.course.update({ where: { id }, data });
+    const isArchiving = data.status === 'ARCHIVED' && course.status !== 'ARCHIVED';
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.course.update({ where: { id }, data });
+      if (isArchiving) {
+        await this.auditService.log(
+          { actorId: callerId, action: AuditAction.COURSE_ARCHIVED, entityType: 'Course', entityId: id },
+          tx,
+        );
+      }
+      return updated;
+    });
   }
 
   async enrollOne(courseId: string, studentId: string, name: string, caller: CallerContext) {

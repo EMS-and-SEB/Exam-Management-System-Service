@@ -3,12 +3,13 @@ import {
   Controller,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '../auth/decorators/auth.decorator.js';
-import { AppException } from '../common/exceptions/app-exceptions.js';
+import { CurrentUser, Roles } from '../auth/decorators/auth.decorator.js';
+import type { JwtPayload } from '../auth/validation/auth.interface.js';
 import { StaffRole } from '../generated/prisma/client.js';
 import { CreateStaffDto } from './dto/create-staff.dto.js';
 import { StaffQueryDto } from './dto/staff-query.dto.js';
@@ -21,8 +22,8 @@ export class StaffController {
 
   @Post()
   @Roles(StaffRole.EXAM_ADMIN)
-  async create(@Body() dto: CreateStaffDto) {
-    return this.staffService.create(dto);
+  create(@Body() dto: CreateStaffDto, @CurrentUser() user: JwtPayload) {
+    return this.staffService.create(dto, user.sub);
   }
 
   @Get()
@@ -33,25 +34,13 @@ export class StaffController {
 
   @Get(':id')
   @Roles(StaffRole.EXAM_ADMIN)
-  async findOne(@Param('id') id: string) {
-    if (!this.isValidUuid(id)) {
-      throw AppException.badRequest('Invalid ID format.');
-    }
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.staffService.findOne(id);
   }
 
   @Patch(':id')
   @Roles(StaffRole.EXAM_ADMIN)
-  async update(@Param('id') id: string, @Body() dto: UpdateStaffDto) {
-    if (!this.isValidUuid(id)) {
-      throw AppException.badRequest('Invalid ID format.');
-    }
-    return this.staffService.update(id, dto);
-  }
-
-  private isValidUuid(id: string): boolean {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      id,
-    );
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStaffDto, @CurrentUser() user: JwtPayload) {
+    return this.staffService.update(id, dto, user.sub);
   }
 }

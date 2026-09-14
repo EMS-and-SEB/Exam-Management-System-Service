@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -30,11 +31,9 @@ export class StudentsController {
 
   @Post('bulk')
   @Roles(StaffRole.EXAM_ADMIN)
-  @UseInterceptors(FileInterceptor('file'))
-  async bulkImport(@UploadedFile() file: Express.Multer.File) {
-    if (!file) {
-      throw AppException.badRequest('No file uploaded.');
-    }
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  async bulkImport(@UploadedFile() file: Express.Multer.File | undefined) {
+    if (!file) throw AppException.badRequest('No file uploaded.');
     if (file.mimetype !== 'text/csv' && !file.originalname.endsWith('.csv')) {
       throw AppException.badRequest('Only CSV files are allowed.');
     }
@@ -57,25 +56,13 @@ export class StudentsController {
     StaffRole.INSTRUCTOR,
     StaffRole.EXIT_EXAM_COORDINATOR,
   )
-  async findOne(@Param('id') id: string) {
-    if (!this.isValidUuid(id)) {
-      throw AppException.badRequest('Invalid ID format.');
-    }
+  async findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.studentsService.findOne(id);
   }
 
   @Patch(':id')
   @Roles(StaffRole.EXAM_ADMIN)
-  async update(@Param('id') id: string, @Body() dto: UpdateStudentDto) {
-    if (!this.isValidUuid(id)) {
-      throw AppException.badRequest('Invalid ID format.');
-    }
+  async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStudentDto) {
     return this.studentsService.update(id, dto);
-  }
-
-  private isValidUuid(id: string): boolean {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      id,
-    );
   }
 }

@@ -17,10 +17,11 @@ import { QuestionsModule } from './questions/questions.module.js';
 import { SessionsModule } from './sessions/sessions.module.js';
 import { StaffModule } from './staff/staff.module.js';
 import { StudentsModule } from './students/students.module.js';
-
-// import { ExamModule } from './exam/exam.module.js';
-// import { IncidentsModule } from './incidents/incidents.module.js';
-// import { AuditModule } from './audit/audit.module.js';
+import { ExamModule } from './exam/exam.module.js';
+import { IncidentsModule } from './incidents/incidents.module.js';
+import { AuditModule } from './audit/audit.module.js';
+import { RetentionPolicyModule } from './retention-policy/retention.module.js';
+import { SebModule } from './seb/seb.module.js';
 
 @Module({
   imports: [
@@ -51,9 +52,11 @@ import { StudentsModule } from './students/students.module.js';
     CoursesModule,
     SessionsModule,
     GradingModule,
-    // ExamModule,
-    // IncidentsModule,
-    // AuditModule,
+    ExamModule,
+    IncidentsModule,
+    AuditModule,
+    RetentionPolicyModule,
+    SebModule,
   ],
 
   providers: [

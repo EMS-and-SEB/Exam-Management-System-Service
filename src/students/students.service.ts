@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { parse } from 'csv-parse/sync';
+import { parseRosterCsv } from '../common/utils/csv-parser.util.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { StudentDirectory } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -96,69 +96,33 @@ export class StudentsService {
     });
   }
 
-  async bulkImport(fileBuffer: Buffer): Promise<{
-    created: number;
-    updated: number;
-    errors: Array<{ row: number; reason: string }>;
-  }> {
-    let records: any[];
-    try {
-      records = parse(fileBuffer, {
-        columns: true,
-        skip_empty_lines: true,
-        trim: true,
-      });
-    } catch {
-      throw AppException.badRequest('Invalid CSV format.');
-    }
+  async bulkImport(fileBuffer: Buffer) {
+    const { rows, errors } = parseRosterCsv(fileBuffer);
+    if (rows.length === 0) return { created: 0, updated: 0, errors };
 
-    const results = {
-      created: 0,
-      updated: 0,
-      errors: [] as Array<{ row: number; reason: string }>,
-    };
+    const studentIds = rows.map((r) => r.studentId);
+    const existing = await this.prisma.studentDirectory.findMany({ where: { studentId: { in: studentIds } } });
+    const existingMap = new Map(existing.map((s) => [s.studentId, s]));
 
-    for (let i = 0; i < records.length; i++) {
-      const row = records[i];
-      const rowNum = i + 2;
+    const newRows = rows.filter((r) => !existingMap.has(r.studentId));
+    const rowsToUpdate = rows.filter((r) => {
+      const current = existingMap.get(r.studentId);
+      return current && current.name !== r.name;
+    });
 
-      const studentId = row.studentId?.trim();
-      const name = row.name?.trim();
+    await this.prisma.$transaction([
+      ...(newRows.length > 0
+        ? [this.prisma.studentDirectory.createMany({
+            data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
+            skipDuplicates: true,
+          })]
+        : []),
+      ...rowsToUpdate.map((r) =>
+        this.prisma.studentDirectory.update({ where: { studentId: r.studentId }, data: { name: r.name } }),
+      ),
+    ]);
 
-      if (!studentId) {
-        results.errors.push({ row: rowNum, reason: 'Missing studentId.' });
-        continue;
-      }
-      if (!name) {
-        results.errors.push({ row: rowNum, reason: 'Missing name.' });
-        continue;
-      }
-
-      try {
-        const existing = await this.prisma.studentDirectory.findUnique({
-          where: { studentId },
-        });
-        if (existing) {
-          await this.prisma.studentDirectory.update({
-            where: { studentId },
-            data: { name },
-          });
-          results.updated += 1;
-        } else {
-          await this.prisma.studentDirectory.create({
-            data: { studentId, name },
-          });
-          results.created += 1;
-        }
-      } catch (err) {
-        results.errors.push({
-          row: rowNum,
-          reason: 'Database error: ' + ((err as Error)?.message || 'unknown'),
-        });
-      }
-    }
-
-    return results;
+    return { created: newRows.length, updated: rowsToUpdate.length, errors };
   }
 
   async findOrCreateByStudentId(

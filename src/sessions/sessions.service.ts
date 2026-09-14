@@ -11,6 +11,8 @@ import type {
   SaveAnswerDto,
   StudentLoginDto,
 } from './validation/sessions.dto.js';
+// import { JwtService } from '@nestjs/jwt';
+// import { ConfigService } from '@nestjs/config';
 
 const AUTO_GRADED_TYPES: QuestionType[] = [
   QuestionType.TRUE_FALSE,
@@ -22,10 +24,22 @@ const AUTO_GRADED_TYPES: QuestionType[] = [
 
 @Injectable()
 export class SessionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // private readonly jwtService: JwtService,
+    // private readonly configService: ConfigService,    
+  ) {}
 
   // ---------------- LOGIN ----------------
   async studentLogin(dto: StudentLoginDto) {
+    // try {
+    //   this.jwtService.verify(dto.handshakeToken, {
+    //     secret: this.configService.getOrThrow<string>('seb.handshakeSecret'),
+    //   });
+    // } catch {
+    //   throw AppException.unauthorized('A valid SEB handshake is required to log in.');
+    // }
+
     const otp = await this.prisma.examOTP.findFirst({
       where: { code: dto.otp },
     });

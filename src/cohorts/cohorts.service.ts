@@ -5,6 +5,8 @@ import { AppException } from '../common/exceptions/app-exceptions.js';
 import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
 import { parseRosterCsv } from '../common/utils/csv-parser.util.js';
 import { StudentsService } from '../students/students.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { AuditAction } from '../audit/audit.const.js';
 
 interface CallerContext {
   staffId: string;
@@ -15,11 +17,19 @@ interface CallerContext {
 export class CohortsService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly auditService: AuditService,
     private readonly studentsService: StudentsService
   ) {}
 
-  async create(name: string, coordinatorId: string) {
-    return this.prisma.cohort.create({ data: { name, coordinatorId } });
+  async create(name: string, coordinatorId: string, callerId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const cohort = await tx.cohort.create({ data: { name, coordinatorId } });
+      await this.auditService.log(
+        { actorId: callerId, action: AuditAction.COHORT_CREATED, entityType: 'Cohort', entityId: cohort.id },
+        tx,
+      );
+      return cohort;
+    });
   }
 
    async findAll(caller: CallerContext) {
@@ -32,10 +42,20 @@ export class CohortsService {
     return this.assertOwnsCohort(id, caller);
   }
 
-   async update(id: string, data: { name?: string; coordinatorId?: string; status?: CohortStatus }) {
+  async update(id: string, data: { name?: string; coordinatorId?: string; status?: CohortStatus }, callerId: string) {
     const cohort = await this.prisma.cohort.findUnique({ where: { id } });
     if (!cohort) throw AppException.notFound('Cohort not found.');
-    return this.prisma.cohort.update({ where: { id }, data });
+    const isArchiving = data.status === 'ARCHIVED' && cohort.status !== 'ARCHIVED';
+    return this.prisma.$transaction(async (tx) => {
+      const updatedCohort = await tx.cohort.update({ where: { id }, data });
+      if (isArchiving) {
+        await this.auditService.log(
+          { actorId: callerId, action: AuditAction.COHORT_ARCHIVED, entityType: 'Cohort', entityId: updatedCohort.id },
+          tx,
+        );
+      }
+      return updatedCohort;
+    });
   }
 
   async addOne(cohortId: string, studentId: string, name: string, caller: CallerContext) {

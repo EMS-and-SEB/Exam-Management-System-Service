@@ -4,6 +4,7 @@ import { z } from 'zod';
 export const studentLoginSchema = z.object({
   studentId: z.string().min(1, 'Student ID is required.'),
   otp: z.string().min(1, 'OTP is required.'),
+  handshakeToken: z.string().min(1, 'Handshake token is required.'),
 });
 export class StudentLoginDto extends createZodDto(studentLoginSchema) {}
 

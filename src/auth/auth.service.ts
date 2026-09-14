@@ -7,6 +7,9 @@ import { bcryptHash, bcryptCompare, sha256Hash } from './utils/hash.util.js';
 import { generateOtp, generateOpaqueToken } from './utils/token.util.js';
 import type { JwtPayload } from './validation/auth.interface.js';
 import { EmailService } from '../email/email.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { AuditAction } from '../audit/audit.const.js';
+import { Prisma } from '../generated/prisma/client.js';
 
 @Injectable()
 export class AuthService {
@@ -15,6 +18,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly emailService: EmailService,
+    private readonly auditService: AuditService,
   ) {}
 
   async login(email: string, password: string) {
@@ -107,33 +111,24 @@ export class AuthService {
 
   async confirmPasswordReset(resetToken: string, newPassword: string) {
     const reset = await this.prisma.staffPasswordReset.findFirst({
-      where: {
-        resetTokenHash: sha256Hash(resetToken),
-        resetTokenConsumedAt: null,
-        resetTokenExpiresAt: { gt: new Date() },
-      },
+      where: { resetTokenHash: sha256Hash(resetToken), resetTokenConsumedAt: null, resetTokenExpiresAt: { gt: new Date() } },
     });
     if (!reset) throw AppException.badRequest('Invalid or expired reset token.');
 
-    await this.prisma.$transaction([
-      this.prisma.staffAccount.update({
-        where: { id: reset.staffId },
-        data: { passwordHash: await bcryptHash(newPassword) },
-      }),
-      this.prisma.staffPasswordReset.update({
-        where: { id: reset.id },
-        data: { resetTokenConsumedAt: new Date() },
-      }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.staffAccount.update({ where: { id: reset.staffId }, data: { passwordHash: await bcryptHash(newPassword) } });
+      await tx.staffPasswordReset.update({ where: { id: reset.id }, data: { resetTokenConsumedAt: new Date() } });
+      await this.auditService.log(
+        { actorId: reset.staffId, action: AuditAction.STAFF_PASSWORD_RESET, entityType: 'StaffAccount', entityId: reset.staffId },
+        tx,
+      );
+    });
 
     await this.revokeAllSessions(reset.staffId);
   }
 
-  async revokeAllSessions(staffId: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: { staffId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+  async revokeAllSessions(staffId: string, tx: Prisma.TransactionClient | PrismaService = this.prisma) {
+    await tx.refreshToken.updateMany({ where: { staffId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
   private async issueSession(staffId: string, role: JwtPayload['role']) {
@@ -150,5 +145,19 @@ export class AuthService {
     });
 
     return { accessToken, rawRefreshToken };
+  }
+
+  async identifyAssignedInvigilator(examId: string, password: string) {
+    const assignment = await this.prisma.examInvigilator.findFirst({
+      where: { examId },
+      include: { invigilator: true },
+    });
+    if (!assignment || !assignment.invigilator.isActive) {
+      throw AppException.unauthorized('No active invigilator is assigned to this exam.');
+    }
+    if (!(await bcryptCompare(password, assignment.invigilator.passwordHash))) {
+      throw AppException.unauthorized('Incorrect password.');
+    }
+    return assignment.invigilator;
   }
 }

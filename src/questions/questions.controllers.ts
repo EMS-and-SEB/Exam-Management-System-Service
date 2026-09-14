@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { CurrentUser, Roles } from '../auth/decorators/auth.decorator.js';
 import { StaffRole } from '../generated/prisma/client.js';
 import type { JwtPayload } from '../auth/validation/auth.interface.js';
@@ -12,7 +12,7 @@ export class QuestionsController {
   @Post('courses/:courseId/questions')
   @Roles(StaffRole.INSTRUCTOR)
   createForCourse(
-    @Param('courseId') courseId: string,
+    @Param('courseId', ParseUUIDPipe) courseId: string,
     @Body() dto: CreateQuestionsDto,
     @CurrentUser() user: JwtPayload,
   ) {
@@ -24,14 +24,14 @@ export class QuestionsController {
 
   @Get('courses/:courseId/questions')
   @Roles(StaffRole.INSTRUCTOR)
-  async listCourse(@Param('courseId') courseId: string, @CurrentUser() user: JwtPayload) {
+  async listCourse(@Param('courseId', ParseUUIDPipe) courseId: string, @CurrentUser() user: JwtPayload) {
     return this.questionsService.findAllForParent({ courseId }, { staffId: user.sub, role: user.role });
   }
 
   @Post('cohorts/:cohortId/questions')
   @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
    createForCohort(
-    @Param('cohortId') cohortId: string,
+    @Param('cohortId', ParseUUIDPipe) cohortId: string,
     @Body() dto: CreateQuestionsDto,
     @CurrentUser() user: JwtPayload,
   ) {
@@ -43,20 +43,20 @@ export class QuestionsController {
 
   @Get('cohorts/:cohortId/questions')
   @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
-  async listCohort(@Param('cohortId') cohortId: string, @CurrentUser() user: JwtPayload) {
+  async listCohort(@Param('cohortId', ParseUUIDPipe) cohortId: string, @CurrentUser() user: JwtPayload) {
     return this.questionsService.findAllForParent({ cohortId }, { staffId: user.sub, role: user.role });
   }
 
   @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
   @Get('questions/:questionId')
-  findOne(@Param('questionId') questionId: string, @CurrentUser() user: JwtPayload) {
+  findOne(@Param('questionId', ParseUUIDPipe) questionId: string, @CurrentUser() user: JwtPayload) {
     return this.questionsService.findOne(questionId, { staffId: user.sub, role: user.role });
   }
 
   @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
   @Patch('questions/:questionId')
   update(
-    @Param('questionId') questionId: string,
+    @Param('questionId', ParseUUIDPipe) questionId: string,
     @Body() dto: UpdateQuestionDto,
     @CurrentUser() user: JwtPayload,
   ) {
@@ -65,7 +65,7 @@ export class QuestionsController {
 
   @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
   @Delete('questions/:questionId')
-  async remove(@Param('questionId') questionId: string, @CurrentUser() user: JwtPayload) {
+  async remove(@Param('questionId', ParseUUIDPipe) questionId: string, @CurrentUser() user: JwtPayload) {
     await this.questionsService.remove(questionId, { staffId: user.sub, role: user.role });
     return { success: true };
   }

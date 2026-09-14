@@ -22,4 +22,7 @@ export const envSchema = z.object({
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),
   RESEND_API_KEY: z.string().optional(),
+
+  SEB_CLIENT_KEY: z.string().min(32),
+  SEB_HANDSHAKE_SECRET: z.string().min(32),
 });
