@@ -154,8 +154,7 @@ export class ExamService {
       : (await this.prisma.cohortMember.findMany({ where: { cohortId: exam.cohortId! }, select: { studentId: true } })).map((m) => m.studentId);
 
     const otp = generateOtp();
-    const otpExpiresAt = new Date(Date.now() + (exam.durationMinutes ?? 180) * 60 * 1000);
-
+    const otpExpiresAt = new Date(exam.scheduledStart!.getTime() + (exam.durationMinutes ?? 180) * 60 * 1000);
     const [, , updatedExam] = await this.prisma.$transaction([
       this.prisma.examRoster.createMany({ data: rosterStudentIds.map((studentId) => ({ examId, studentId })) }),
       this.prisma.examOTP.create({ data: { examId, code: otp, expiresAt: otpExpiresAt } }),
@@ -179,6 +178,13 @@ export class ExamService {
 
   async getOtp(examId: string, staffId: string) {
     await this.assertIsAssignedInvigilator(examId, staffId);
+
+    const exam = await this.prisma.exam.findUniqueOrThrow({ where: { id: examId } });
+    const visibleFrom = new Date(exam.scheduledStart!.getTime() - 5 * 60 * 1000);
+    if (new Date() < visibleFrom) {
+      throw AppException.forbidden(`The OTP will be visible starting ${visibleFrom.toISOString()}.`);
+    }
+
     const otp = await this.prisma.examOTP.findUnique({ where: { examId } });
     if (!otp) throw AppException.notFound('This exam has not been released yet.');
     return { otp: otp.code, expiresAt: otp.expiresAt };
