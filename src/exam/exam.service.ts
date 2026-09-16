@@ -154,7 +154,7 @@ export class ExamService {
       : (await this.prisma.cohortMember.findMany({ where: { cohortId: exam.cohortId! }, select: { studentId: true } })).map((m) => m.studentId);
 
     const otp = generateOtp();
-    const otpExpiresAt = new Date(exam.scheduledStart!.getTime() + (exam.durationMinutes ?? 180) * 60 * 1000);
+    const otpExpiresAt = new Date(exam.scheduledStart!.getTime() + 30 * 60 * 1000);
     const [, , updatedExam] = await this.prisma.$transaction([
       this.prisma.examRoster.createMany({ data: rosterStudentIds.map((studentId) => ({ examId, studentId })) }),
       this.prisma.examOTP.create({ data: { examId, code: otp, expiresAt: otpExpiresAt } }),
