@@ -22,14 +22,17 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string) {
-    const staff = await this.prisma.staffAccount.findUnique({ where: { email } });
-    if (!staff || !staff.isActive) throw AppException.unauthorized('Invalid credentials.');
+  const staff = await this.prisma.staffAccount.findUnique({ where: { email } });
+  if (!staff || !staff.isActive) throw AppException.unauthorized('Invalid credentials.');
 
-    const matches = await bcryptCompare(password, staff.passwordHash);
-    if (!matches) throw AppException.unauthorized('Invalid credentials.');
+  const matches = await bcryptCompare(password, staff.passwordHash);
+  if (!matches) throw AppException.unauthorized('Invalid credentials.');
 
-    return this.issueSession(staff.id, staff.role);
-  }
+  const { accessToken, rawRefreshToken } = await this.issueSession(staff.id, staff.role);
+
+  const { passwordHash: _omit, ...safeStaff } = staff;
+  return { accessToken, rawRefreshToken, staff: safeStaff };
+}
 
   async refresh(rawRefreshToken: string | undefined) {
     if (!rawRefreshToken) throw AppException.unauthorized();

@@ -26,9 +26,9 @@ export class AuthController {
   @Post('staff/login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const { accessToken, rawRefreshToken } = await this.authService.login(dto.email, dto.password);
+    const { accessToken, rawRefreshToken, staff } = await this.authService.login(dto.email, dto.password);
     this.setRefreshCookie(res, rawRefreshToken);
-    return { accessToken };
+    return { jwt: accessToken, staff };
   }
 
   @Public()
@@ -37,7 +37,7 @@ export class AuthController {
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { accessToken, rawRefreshToken } = await this.authService.refresh(req.cookies?.[REFRESH_COOKIE]);
     this.setRefreshCookie(res, rawRefreshToken);
-    return { accessToken };
+    return { jwt: accessToken };
   }
 
   @Public()
@@ -55,7 +55,7 @@ export class AuthController {
   }
 
   @Public()
-  @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
+  // @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
   @Post('staff/password-reset/request')
   @HttpCode(HttpStatus.OK)
   async requestPasswordReset(@Body() dto: PasswordResetRequestDto) {
@@ -64,7 +64,7 @@ export class AuthController {
   }
 
   @Public()
-  @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
+  // @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
   @Post('staff/password-reset/verify')
   @HttpCode(HttpStatus.OK)
   verifyPasswordReset(@Body() dto: PasswordResetVerifyDto) {

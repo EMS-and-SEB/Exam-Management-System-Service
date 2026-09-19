@@ -2,6 +2,10 @@ export default () => ({
   app: {
     port: Number(process.env.PORT ?? 3000),
     environment: process.env.NODE_ENV ?? 'development',
+    corsOrigins: (process.env.CORS_ORIGIN ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
   },
   database: {
     url: process.env.DATABASE_URL,
