@@ -184,12 +184,12 @@ model CohortMember {
   id        String   @id @default(uuid()) @db.Uuid
   cohortId  String   @db.Uuid
   studentId String   @db.Uuid
+  deletedAt DateTime?
   createdAt DateTime @default(now())
 
   cohort  Cohort           @relation(fields: [cohortId], references: [id])
   student StudentDirectory @relation(fields: [studentId], references: [id])
 
-  @@unique([cohortId, studentId])
 }
 
 model Exam {

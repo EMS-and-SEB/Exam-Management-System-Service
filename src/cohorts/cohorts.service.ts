@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { CohortStatus, StaffRole, ExamStatus } from '../generated/prisma/client.js';
+import { CohortStatus, StaffRole, SessionStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
@@ -35,6 +35,7 @@ export class CohortsService {
    async findAll(caller: CallerContext) {
     return this.prisma.cohort.findMany({
       where: buildOwnerScopeWhere(caller.role, caller.staffId, 'coordinatorId'),
+      include: { coordinator: true },
     });
   }
 
@@ -71,7 +72,7 @@ export class CohortsService {
     const uniqueIds = [...new Set(studentIds)];
 
     const existing = await this.prisma.cohortMember.findMany({
-      where: { cohortId, studentId: { in: uniqueIds } },
+      where: { cohortId, studentId: { in: uniqueIds }, deletedAt: null },
       select: { studentId: true },
     });
     const existingSet = new Set(existing.map((m) => m.studentId));
@@ -103,7 +104,7 @@ export class CohortsService {
     ).values()];
 
     const existingMembers = await this.prisma.cohortMember.findMany({
-      where: { cohortId },
+      where: { cohortId, deletedAt: null },
       select: { studentId: true },
     });
     const alreadyMemberSet = new Set(existingMembers.map((m) => m.studentId));
@@ -135,7 +136,7 @@ export class CohortsService {
   async listMembers(cohortId: string, caller: CallerContext) {
     await this.assertOwnsCohort(cohortId, caller);
     return this.prisma.cohortMember.findMany({
-      where: { cohortId },
+      where: { cohortId, deletedAt: null },
       include: { student: true },
     });
   }
@@ -143,17 +144,25 @@ export class CohortsService {
   async removeMember(cohortId: string, studentId: string, caller: CallerContext) {
     await this.assertOwnsCohort(cohortId, caller);
 
-    const member = await this.prisma.cohortMember.findFirst({ where: { cohortId, studentId } });
+    const member = await this.prisma.cohortMember.findFirst({ where: { cohortId, studentId, deletedAt: null } });
     if (!member) throw AppException.notFound('Cohort member not found.');
 
-    const hasReleasedExam = await this.prisma.exam.findFirst({
-      where: { cohortId, status: { in: [ExamStatus.RELEASED, ExamStatus.CLOSED] } },
+    const hasTakenExam = await this.prisma.examSession.findFirst({
+      where: {
+        exam: { cohortId },
+        studentId,
+        status: { not: SessionStatus.NOT_STARTED },
+      },
     });
-    if (hasReleasedExam) {
-      throw AppException.conflict('This student cannot be removed — the cohort\'s exit exam has already been released.');
-    }
 
-    await this.prisma.cohortMember.delete({ where: { id: member.id } });
+    if (hasTakenExam) {
+      await this.prisma.cohortMember.update({
+        where: { id: member.id },
+        data: { deletedAt: new Date() },
+      });
+    } else {
+      await this.prisma.cohortMember.delete({ where: { id: member.id } });
+    }
   }
 
   private async assertOwnsCohort(cohortId: string, caller: CallerContext) {

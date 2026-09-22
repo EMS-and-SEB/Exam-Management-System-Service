@@ -14,3 +14,14 @@ export class AuditController {
     return this.auditService.findForUser(userId, query.page, query.limit);
   }
 }
+
+@Controller('audit-logs')
+export class RecentAuditController {
+  constructor(private readonly auditService: AuditService) {}
+
+  @Roles(StaffRole.EXAM_ADMIN)
+  @Get('recent')
+  findRecent(@Query() query: AuditQueryDto) {
+    return this.auditService.findRecent(query.limit);
+  }
+}

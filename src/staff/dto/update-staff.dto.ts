@@ -1,4 +1,5 @@
 import { createZodDto } from 'nestjs-zod';
-import { updateStaffSchema } from '../validation/staff.schema.js';
+import { updateProfileSchema, updateStaffSchema } from '../validation/staff.schema.js';
 
 export class UpdateStaffDto extends createZodDto(updateStaffSchema) {}
+export class UpdateProfileDto extends createZodDto(updateProfileSchema) {}

@@ -55,7 +55,7 @@ export class AuthController {
   }
 
   @Public()
-  // @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
+  @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
   @Post('staff/password-reset/request')
   @HttpCode(HttpStatus.OK)
   async requestPasswordReset(@Body() dto: PasswordResetRequestDto) {
@@ -64,7 +64,7 @@ export class AuthController {
   }
 
   @Public()
-  // @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
+  @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
   @Post('staff/password-reset/verify')
   @HttpCode(HttpStatus.OK)
   verifyPasswordReset(@Body() dto: PasswordResetVerifyDto) {

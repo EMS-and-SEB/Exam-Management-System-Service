@@ -29,4 +29,13 @@ export const envSchema = z.object({
 
   SEB_CLIENT_KEY: z.string().min(32),
   SEB_HANDSHAKE_SECRET: z.string().min(32),
+}).superRefine((env, ctx) => {
+  if (env.NODE_ENV === 'production') {
+    if (!env.RESEND_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'RESEND_API_KEY is required in production',
+      });
+    }
+  }
 });

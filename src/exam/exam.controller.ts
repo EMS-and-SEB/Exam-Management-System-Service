@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { ExamService } from './exam.service.js';
 import { Roles, CurrentUser } from '../auth/decorators/auth.decorator.js';
 import type { JwtPayload } from '../auth/validation/auth.interface.js';
@@ -16,8 +16,12 @@ export class ExamController {
   }
 
   @Get()
-  findAll(@CurrentUser() user: JwtPayload) {
-    return this.examService.findAll({ staffId: user.sub, role: user.role });
+  findAll(
+    @Query('courseId') courseId: string | undefined,
+    @Query('cohortId') cohortId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.examService.findAll({ staffId: user.sub, role: user.role }, { courseId, cohortId });
   }
 
   @Get(':id')

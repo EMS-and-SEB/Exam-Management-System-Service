@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { JwtPayload } from '../auth/validation/auth.interface.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { ResultsExportService } from '../common/results-export/results-export.service.js';
-import { SessionStatus } from '../generated/prisma/client.js';
+import { ExamStatus, SessionStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { GradeAnswerDto } from './validation/grading.dto.js';
 
@@ -64,7 +64,6 @@ export class GradingService {
     }
   }
 
-  // ---------------- LIST EXAM SESSIONS ----------------
   async listExamSessions(examId: string, user: JwtPayload) {
     const exam = await this.loadExamWithOwners(examId);
     this.assertExamOwnership(exam, user);
@@ -73,36 +72,33 @@ export class GradingService {
       where: { examId },
       include: {
         student: { select: { id: true, studentId: true, name: true } },
-        answers: { select: { pointsAwarded: true } },
-        incidents: true,
+        answers: { select: { pointsAwarded: true, gradedAt: true, examQuestion: { select: { type: true } } } },
       },
       orderBy: { student: { studentId: 'asc' } },
     });
 
-    const totalPoints = await this.prisma.examQuestion.aggregate({
-      where: { examId },
-      _sum: { points: true },
-    });
+    const totalPoints = await this.prisma.examQuestion.aggregate({ where: { examId }, _sum: { points: true } });
     const maxScore = totalPoints._sum.points ?? 0;
 
-    return {
-      examId,
-      maxScore,
-      sessions: sessions.map((s) => ({
+    return sessions.map((s) => {
+      const autoScore = s.answers.filter((a) => a.examQuestion.type !== 'WORKOUT').reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
+      const manualScore = s.answers.filter((a) => a.examQuestion.type === 'WORKOUT').reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
+      const needsGrading = s.answers.some((a) => a.examQuestion.type === 'WORKOUT' && a.gradedAt === null);
+
+      return {
         id: s.id,
-        student: s.student,
+        studentId: s.student.id,
+        student: { studentId: s.student.studentId, name: s.student.name },
         status: s.status,
-        startedAt: s.startedAt,
-        endsAt: s.endsAt,
-        submittedAt: s.submittedAt,
-        lastPolledAt: s.lastPolledAt,
-        score: s.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0),
-        incidents: s.incidents,
-      })),
-    };
+        autoScore,
+        manualScore,
+        totalScore: autoScore + manualScore,
+        maxScore,
+        needsGrading,
+      };
+    });
   }
 
-  // ---------------- SESSION ANSWERS ----------------
   async listSessionAnswers(sessionId: string, user: JwtPayload) {
     const session = await this.prisma.examSession.findUnique({
       where: { id: sessionId },
@@ -132,28 +128,22 @@ export class GradingService {
     }
 
     return {
-      sessionId,
-      student: session.student,
-      status: session.status,
-      submittedAt: session.submittedAt,
-      answers: session.answers.map((a) => ({
-        id: a.id,
-        examQuestionId: a.examQuestionId,
-        prompt: a.examQuestion.prompt,
-        type: a.examQuestion.type,
-        options: a.examQuestion.options,
-        correctAnswer: a.examQuestion.correctAnswer,
-        points: a.examQuestion.points,
-        responseData: a.responseData,
-        isCorrect: a.isCorrect,
-        pointsAwarded: a.pointsAwarded,
-        gradedBy: a.gradedBy,
-        gradedAt: a.gradedAt,
-      })),
-    };
+    session: { id: session.id, studentId: session.studentId, student: session.student },
+    answers: session.answers.map((a) => ({
+      id: a.id,
+      examQuestionId: a.examQuestionId,
+      type: a.examQuestion.type,
+      prompt: a.examQuestion.prompt,
+      points: a.examQuestion.points,
+      responseData: a.responseData,
+      correctAnswer: a.examQuestion.correctAnswer,
+      isCorrect: a.isCorrect,
+      pointsAwarded: a.pointsAwarded,
+      gradedAt: a.gradedAt,
+    })),
+  };
   }
 
-  // ---------------- GRADE AN ANSWER ----------------
   async gradeAnswer(answerId: string, dto: GradeAnswerDto, user: JwtPayload) {
     const answer = await this.prisma.answer.findUnique({
       where: { id: answerId },
@@ -206,10 +196,12 @@ export class GradingService {
     };
   }
 
-  // ---------------- EXPORTS ----------------
   async exportExamResults(examId: string, user: JwtPayload): Promise<string> {
     const exam = await this.loadExamWithOwners(examId);
     this.assertExamOwnership(exam, user);
+    if (exam.status !== ExamStatus.CLOSED) {
+      throw AppException.badRequest('Only closed exams have exportable results.');
+    }
 
     const [roster, maxScoreAgg] = await Promise.all([
       this.prisma.examRoster.findMany({
@@ -235,199 +227,228 @@ export class GradingService {
       const s = sessionsByStudent.get(r.student.id);
       const score =
         s?.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0) ?? 0;
-      return [r.student.studentId, r.student.name, s ? score : '', maxScore];
+      return [
+        r.student.studentId,
+        r.student.name,
+        s && s.status !== SessionStatus.NOT_STARTED ? score : '-',
+      ];
     });
 
-    return this.csv.buildCsv(['studentId', 'name', 'score', 'maxScore'], rows);
+    return this.csv.buildCsv(
+      ['studentId', 'name', `${exam.title}(${maxScore})`],
+      rows,
+    );
   }
 
-  async exportCourseResults(courseId: string, user: JwtPayload) {
-    const course = await this.prisma.course.findUnique({
-      where: { id: courseId },
+  async courseResults(courseId: string, user: JwtPayload) {
+    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
+    if (!course) throw AppException.notFound('Course not found.');
+    this.assertCourseOwnership(course, user);
+
+    const exams = await this.prisma.exam.findMany({ where: { courseId, status: 'CLOSED' } });
+    const examIds = exams.map((e) => e.id);
+
+    const maxScoreRows = await this.prisma.examQuestion.groupBy({
+      by: ['examId'],
+      where: { examId: { in: examIds } },
+      _sum: { points: true },
     });
+    const maxScoreByExam = new Map(maxScoreRows.map((r) => [r.examId, r._sum.points ?? 0]));
+
+    const enrollments = await this.prisma.enrollment.findMany({
+      where: { courseId },
+      include: { student: { select: { id: true, studentId: true, name: true } } },
+    });
+    const studentIds = enrollments.map((e) => e.student.id);
+
+    const sessions = await this.prisma.examSession.findMany({
+      where: { examId: { in: examIds }, studentId: { in: studentIds } },
+      include: { answers: { select: { pointsAwarded: true } } },
+    });
+    const sessionsByKey = new Map(sessions.map((s) => [`${s.studentId}:${s.examId}`, s]));
+
+    return enrollments.map((enrollment) => {
+      const scores: Record<string, { score: number; maxScore: number } | null> = {};
+      let totalScore = 0;
+
+      for (const exam of exams) {
+        const session = sessionsByKey.get(`${enrollment.student.id}:${exam.id}`);
+        const maxScore = maxScoreByExam.get(exam.id) ?? 0;
+
+        if (session && session.status !== SessionStatus.NOT_STARTED) {
+          const score = session.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
+          scores[exam.id] = { score, maxScore };
+          totalScore += score;
+        } else {
+          scores[exam.id] = null;
+        }
+      }
+
+      return {
+        studentId: enrollment.student.studentId,
+        name: enrollment.student.name,
+        scores,
+        aggregate: totalScore,
+      };
+    });
+  }
+  async exportCourseResults(courseId: string, user: JwtPayload) {
+    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
     if (!course) throw AppException.notFound('Course not found.');
     this.assertCourseOwnership(course, user);
 
     const exams = await this.prisma.exam.findMany({
-      where: { courseId },
+      where: { courseId, status: ExamStatus.CLOSED },
       orderBy: { createdAt: 'asc' },
     });
+    const examIds = exams.map((e) => e.id);
 
-    const examColumns = exams.map((e) => e.title);
-    const maxScoreByExam = new Map<string, number>();
-    for (const e of exams) {
-      const agg = await this.prisma.examQuestion.aggregate({
-        where: { examId: e.id },
-        _sum: { points: true },
-      });
-      maxScoreByExam.set(e.id, agg._sum.points ?? 0);
-    }
+    const maxScoreRows = await this.prisma.examQuestion.groupBy({
+      by: ['examId'],
+      where: { examId: { in: examIds } },
+      _sum: { points: true },
+    });
+    const maxScoreByExam = new Map(maxScoreRows.map((r) => [r.examId, r._sum.points ?? 0]));
 
     const enrollments = await this.prisma.enrollment.findMany({
-      where: { courseId, deletedAt: null },
-      include: {
-        student: { select: { id: true, studentId: true, name: true } },
-      },
+      where: { courseId },
+      include: { student: { select: { id: true, studentId: true, name: true } } },
     });
+    const studentIds = enrollments.map((e) => e.student.id);
 
-    const headers = [
-      'studentId',
-      'name',
-      ...examColumns.flatMap((t) => [`${t} (score)`, `${t} (max)`]),
-    ];
+    const rosterRows = await this.prisma.examRoster.findMany({
+      where: { examId: { in: examIds }, studentId: { in: studentIds } },
+    });
+    const rosterSet = new Set(rosterRows.map((r) => `${r.studentId}:${r.examId}`));
 
-    const rows: (string | number)[][] = [];
-    for (const enr of enrollments) {
-      const row: (string | number)[] = [
-        enr.student.studentId,
-        enr.student.name,
-      ];
-      for (const e of exams) {
-        const roster = await this.prisma.examRoster.findUnique({
-          where: {
-            examId_studentId: { examId: e.id, studentId: enr.student.id },
-          },
-        });
-        if (!roster) {
-          row.push('--', '--');
+    const sessions = await this.prisma.examSession.findMany({
+      where: { examId: { in: examIds }, studentId: { in: studentIds } },
+      include: { answers: { select: { pointsAwarded: true } } },
+    });
+    const sessionsByKey = new Map(sessions.map((s) => [`${s.studentId}:${s.examId}`, s]));
+
+    const headers = ['studentId', 'name', ...exams.map((e) => `${e.title}(${maxScoreByExam.get(e.id) ?? 0})`)];
+
+    const rows: (string | number)[][] = enrollments.map((enr) => {
+      const row: (string | number)[] = [enr.student.studentId, enr.student.name];
+      for (const exam of exams) {
+        const key = `${enr.student.id}:${exam.id}`;
+        if (!rosterSet.has(key)) {
+          row.push('-');
           continue;
         }
-        const session = await this.prisma.examSession.findUnique({
-          where: {
-            examId_studentId: { examId: e.id, studentId: enr.student.id },
-          },
-          include: { answers: { select: { pointsAwarded: true } } },
-        });
-        const score =
-          session?.answers.reduce(
-            (sum, a) => sum + (a.pointsAwarded ?? 0),
-            0,
-          ) ?? 0;
-        row.push(score, maxScoreByExam.get(e.id) ?? 0);
+        const session = sessionsByKey.get(key);
+        if (!session || session.status === SessionStatus.NOT_STARTED) {
+          row.push('-');
+          continue;
+        }
+        const score = session?.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0) ?? 0;
+        row.push(score);
       }
-      rows.push(row);
-    }
+      return row;
+    });
 
     return this.csv.buildCsv(headers, rows);
   }
 
-  async cohortResults(cohortId: string, user: JwtPayload) {
-    const cohort = await this.prisma.cohort.findUnique({
-      where: { id: cohortId },
-    });
+ async cohortResults(cohortId: string, user: JwtPayload) {
+    const cohort = await this.prisma.cohort.findUnique({ where: { id: cohortId } });
     if (!cohort) throw AppException.notFound('Cohort not found.');
     this.assertCohortOwnership(cohort, user);
 
-    const exams = await this.prisma.exam.findMany({
-      where: { cohortId },
+    const exams = await this.prisma.exam.findMany({ where: { cohortId, status: 'CLOSED' } });
+    const examIds = exams.map((e) => e.id);
+
+    const maxScoreRows = await this.prisma.examQuestion.groupBy({
+      by: ['examId'],
+      where: { examId: { in: examIds } },
+      _sum: { points: true },
     });
-    const maxScoreByExam = new Map<string, number>();
-    for (const e of exams) {
-      const agg = await this.prisma.examQuestion.aggregate({
-        where: { examId: e.id },
-        _sum: { points: true },
-      });
-      maxScoreByExam.set(e.id, agg._sum.points ?? 0);
-    }
+    const maxScoreByExam = new Map(maxScoreRows.map((r) => [r.examId, r._sum.points ?? 0]));
 
     const members = await this.prisma.cohortMember.findMany({
       where: { cohortId },
-      include: {
-        student: { select: { id: true, studentId: true, name: true } },
-      },
+      include: { student: { select: { id: true, studentId: true, name: true } } },
     });
+    const studentIds = members.map((m) => m.student.id);
 
-    const results = await Promise.all(
-      members.map(async (m) => {
-        const examResults = await Promise.all(
-          exams.map(async (e) => {
-            const session = await this.prisma.examSession.findUnique({
-              where: {
-                examId_studentId: {
-                  examId: e.id,
-                  studentId: m.student.id,
-                },
-              },
-              include: { answers: { select: { pointsAwarded: true } } },
-            });
-            const score =
-              session?.answers.reduce(
-                (sum, a) => sum + (a.pointsAwarded ?? 0),
-                0,
-              ) ?? 0;
-            return {
-              examId: e.id,
-              examTitle: e.title,
-              score,
-              maxScore: maxScoreByExam.get(e.id) ?? 0,
-            };
-          }),
-        );
-        return {
-          student: m.student,
-          exams: examResults,
-        };
-      }),
-    );
+    const sessions = await this.prisma.examSession.findMany({
+      where: { examId: { in: examIds }, studentId: { in: studentIds } },
+      include: { answers: { select: { pointsAwarded: true } } },
+    });
+    const sessionsByKey = new Map(sessions.map((s) => [`${s.studentId}:${s.examId}`, s]));
 
-    return { cohortId, results };
+    return members.map((m) => {
+      const scores: Record<string, { score: number; maxScore: number } | null> = {};
+      let totalScore = 0;
+
+      for (const exam of exams) {
+        const session = sessionsByKey.get(`${m.student.id}:${exam.id}`);
+        const maxScore = maxScoreByExam.get(exam.id) ?? 0;
+
+        if (session && session.status !== SessionStatus.NOT_STARTED) {
+          const score = session.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
+          scores[exam.id] = { score, maxScore };
+          totalScore += score;
+        } else {
+          scores[exam.id] = null;
+        }
+      }
+
+      return {
+        studentId: m.student.studentId,
+        name: m.student.name,
+        scores,
+        aggregate: totalScore,
+      };
+    });
   }
 
-  async exportCohortResults(
-    cohortId: string,
-    user: JwtPayload,
-  ): Promise<string> {
-    const cohort = await this.prisma.cohort.findUnique({
-      where: { id: cohortId },
-    });
+  async exportCohortResults(cohortId: string, user: JwtPayload): Promise<string> {
+    const cohort = await this.prisma.cohort.findUnique({ where: { id: cohortId } });
     if (!cohort) throw AppException.notFound('Cohort not found.');
     this.assertCohortOwnership(cohort, user);
 
     const exams = await this.prisma.exam.findMany({
-      where: { cohortId },
+      where: { cohortId, status: ExamStatus.CLOSED },
       orderBy: { createdAt: 'asc' },
     });
-    const maxByExam = new Map<string, number>();
-    for (const e of exams) {
-      const agg = await this.prisma.examQuestion.aggregate({
-        where: { examId: e.id },
-        _sum: { points: true },
-      });
-      maxByExam.set(e.id, agg._sum.points ?? 0);
-    }
+    const examIds = exams.map((e) => e.id);
+
+    const maxScoreRows = await this.prisma.examQuestion.groupBy({
+      by: ['examId'],
+      where: { examId: { in: examIds } },
+      _sum: { points: true },
+    });
+    const maxByExam = new Map(maxScoreRows.map((r) => [r.examId, r._sum.points ?? 0]));
 
     const members = await this.prisma.cohortMember.findMany({
       where: { cohortId },
-      include: {
-        student: { select: { id: true, studentId: true, name: true } },
-      },
+      include: { student: { select: { id: true, studentId: true, name: true } } },
     });
+    const studentIds = members.map((m) => m.student.id);
 
-    const headers = [
-      'studentId',
-      'name',
-      ...exams.flatMap((e) => [`${e.title} (score)`, `${e.title} (max)`]),
-    ];
+    const sessions = await this.prisma.examSession.findMany({
+      where: { examId: { in: examIds }, studentId: { in: studentIds } },
+      include: { answers: { select: { pointsAwarded: true } } },
+    });
+    const sessionsByKey = new Map(sessions.map((s) => [`${s.studentId}:${s.examId}`, s]));
 
-    const rows: (string | number)[][] = [];
-    for (const m of members) {
+    const headers = ['studentId', 'name', ...exams.map((e) => `${e.title}(${maxByExam.get(e.id) ?? 0})`)];
+
+    const rows: (string | number)[][] = members.map((m) => {
       const row: (string | number)[] = [m.student.studentId, m.student.name];
-      for (const e of exams) {
-        const session = await this.prisma.examSession.findUnique({
-          where: {
-            examId_studentId: { examId: e.id, studentId: m.student.id },
-          },
-          include: { answers: { select: { pointsAwarded: true } } },
-        });
-        const score =
-          session?.answers.reduce(
-            (sum, a) => sum + (a.pointsAwarded ?? 0),
-            0,
-          ) ?? 0;
-        row.push(score, maxByExam.get(e.id) ?? 0);
+      for (const exam of exams) {
+        const session = sessionsByKey.get(`${m.student.id}:${exam.id}`);
+        if (!session || session.status === SessionStatus.NOT_STARTED) {
+          row.push('-');
+          continue;
+        }
+        const score = session?.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0) ?? 0;
+        row.push(score);
       }
-      rows.push(row);
-    }
+      return row;
+    });
 
     return this.csv.buildCsv(headers, rows);
   }

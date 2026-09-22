@@ -4,7 +4,7 @@ import { StudentsService } from '../students/students.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
 import { parseRosterCsv } from '../common/utils/csv-parser.util.js';
-import { StaffRole, CourseStatus } from '../generated/prisma/client.js';
+import { StaffRole, CourseStatus, SessionStatus } from '../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
 
@@ -35,6 +35,7 @@ export class CoursesService {
   findAll(caller: CallerContext) {
     return this.prisma.course.findMany({
       where: buildOwnerScopeWhere(caller.role, caller.staffId, 'instructorId'),
+      include: { instructor: true },
     });
   }
 
@@ -147,12 +148,16 @@ export class CoursesService {
     await this.assertOwnsCourse(courseId, caller);
 
     const enrollment = await this.prisma.enrollment.findFirst({
-      where: { courseId, studentId, deletedAt: null },
+      where: { courseId, student: { studentId }, deletedAt: null },
     });
     if (!enrollment) throw AppException.notFound('Enrollment not found.');
 
     const hasTakenExam = await this.prisma.examSession.findFirst({
-      where: { exam: { courseId }, studentId },
+      where: {
+        exam: { courseId },
+        studentId: enrollment.studentId,
+        status: { not: SessionStatus.NOT_STARTED },
+      },
     });
 
     if (hasTakenExam) {

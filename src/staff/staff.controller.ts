@@ -13,7 +13,7 @@ import type { JwtPayload } from '../auth/validation/auth.interface.js';
 import { StaffRole } from '../generated/prisma/client.js';
 import { CreateStaffDto } from './dto/create-staff.dto.js';
 import { StaffQueryDto } from './dto/staff-query.dto.js';
-import { UpdateStaffDto } from './dto/update-staff.dto.js';
+import { UpdateProfileDto, UpdateStaffDto } from './dto/update-staff.dto.js';
 import { StaffService } from './staff.service.js';
 
 @Controller('staff')
@@ -30,6 +30,18 @@ export class StaffController {
   @Roles(StaffRole.EXAM_ADMIN)
   async findAll(@Query() query: StaffQueryDto) {
     return this.staffService.findAll(query);
+  }
+
+  @Get('me')
+  @Roles(...Object.values(StaffRole))
+  findMe(@CurrentUser() user: JwtPayload) {
+    return this.staffService.findOne(user.sub);
+  }
+
+  @Patch('me')
+  @Roles(...Object.values(StaffRole))
+  updateMe(@Body() dto: UpdateProfileDto, @CurrentUser() user: JwtPayload) {
+    return this.staffService.update(user.sub, dto, user.sub);
   }
 
   @Get(':id')

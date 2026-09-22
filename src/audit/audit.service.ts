@@ -34,9 +34,19 @@ export class AuditService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
+        include: { actor: { select: { name: true } } },
       }),
       this.prisma.auditLog.count({ where: { entityId: userId } }),
     ]);
     return { entries, page, pageSize: limit, total, totalPages: Math.ceil(total / limit) };
+  }
+
+  async findRecent(limit: number) {
+    const entries = await this.prisma.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { actor: { select: { name: true } } },
+    });
+    return { entries };
   }
 }

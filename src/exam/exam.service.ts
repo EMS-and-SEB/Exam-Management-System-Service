@@ -22,6 +22,13 @@ export class ExamService {
     dto: { examType: ExamType; title: string; courseId?: string; cohortId?: string; durationMinutes?: number; scheduledStart?: Date },
     caller: CallerContext,
   ) {
+    if (caller.role === StaffRole.INSTRUCTOR && dto.examType === ExamType.MOCK_EXIT) {
+      throw AppException.forbidden();
+    }
+    if (caller.role === StaffRole.EXIT_EXAM_COORDINATOR && dto.examType !== ExamType.MOCK_EXIT) {
+      throw AppException.forbidden();
+    }
+
     if (dto.courseId) {
       const course = await this.prisma.course.findUnique({ where: { id: dto.courseId } });
       if (!course) throw AppException.notFound('Course not found.');
@@ -49,8 +56,28 @@ export class ExamService {
     });
   }
 
-  findAll(caller: CallerContext) {
-    return this.prisma.exam.findMany({ where: this.buildAccessWhere(caller) });
+  async findAll(caller: CallerContext, scope: { courseId?: string; cohortId?: string } = {}) {
+    const exams = await this.prisma.exam.findMany({
+      where: {
+        AND: [
+          this.buildAccessWhere(caller),
+          ...(scope.courseId ? [{ courseId: scope.courseId }] : []),
+          ...(scope.cohortId ? [{ cohortId: scope.cohortId }] : []),
+        ],
+      },
+    });
+
+    const maxScoreRows = await this.prisma.examQuestion.groupBy({
+      by: ['examId'],
+      where: { examId: { in: exams.map((exam) => exam.id) } },
+      _sum: { points: true },
+    });
+    const maxScoreByExam = new Map(maxScoreRows.map((row) => [row.examId, row._sum.points ?? 0]));
+
+    return exams.map((exam) => ({
+      ...exam,
+      maxScore: maxScoreByExam.get(exam.id) ?? 0,
+    }));
   }
 
   findOne(id: string, caller: CallerContext) {
@@ -148,13 +175,19 @@ export class ExamService {
 
   async release(examId: string, caller: CallerContext) {
     const exam = await this.assertOwnsExam(examId, caller, ExamStatus.DRAFT);
+    if (!exam.scheduledStart) {
+      throw AppException.badRequest('An exam start date and time are required before release.');
+    }
+    if (exam.scheduledStart.getTime() <= Date.now()) {
+      throw AppException.badRequest('An exam cannot be released after its scheduled start time.');
+    }
 
     const rosterStudentIds = exam.courseId
       ? (await this.prisma.enrollment.findMany({ where: { courseId: exam.courseId, deletedAt: null }, select: { studentId: true } })).map((e) => e.studentId)
       : (await this.prisma.cohortMember.findMany({ where: { cohortId: exam.cohortId! }, select: { studentId: true } })).map((m) => m.studentId);
 
     const otp = generateOtp();
-    const otpExpiresAt = new Date(exam.scheduledStart!.getTime() + (exam.durationMinutes ?? 180) * 60 * 1000);
+    const otpExpiresAt = new Date(exam.scheduledStart.getTime() + (exam.durationMinutes ?? 180) * 60 * 1000);
     const [, , updatedExam] = await this.prisma.$transaction([
       this.prisma.examRoster.createMany({ data: rosterStudentIds.map((studentId) => ({ examId, studentId })) }),
       this.prisma.examOTP.create({ data: { examId, code: otp, expiresAt: otpExpiresAt } }),
@@ -192,7 +225,7 @@ export class ExamService {
 
   async getRoster(examId: string, staffId: string) {
     await this.assertIsAssignedInvigilator(examId, staffId);
-    return this.prisma.examSession.findMany({ where: { examId }, include: { student: true } });
+    return this.prisma.examSession.findMany({ where: { examId }, include: { student: true, incidents: { where: { resolvedAt: null } } } });
   }
 
   private buildAccessWhere(caller: CallerContext) {
