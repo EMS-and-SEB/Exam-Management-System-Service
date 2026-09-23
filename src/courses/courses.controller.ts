@@ -36,19 +36,19 @@ export class CoursesController {
     return this.coursesService.findOne(id, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR)
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
   @Post(':id/enrollments')
   enrollOne(@Param('id', ParseUUIDPipe) id: string, @Body() dto: EnrollStudentDto, @CurrentUser() user: JwtPayload) {
     return this.coursesService.enrollOne(id, dto.studentId, dto.name, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR)
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
   @Post(':id/enrollments/select')
   enrollSelected(@Param('id', ParseUUIDPipe) id: string, @Body() dto: EnrollSelectedDto, @CurrentUser() user: JwtPayload) {
     return this.coursesService.enrollSelected(id, dto.studentIds, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR)
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
   @Post(':id/enrollments/bulk')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
   enrollBulk(
@@ -60,13 +60,13 @@ export class CoursesController {
     return this.coursesService.enrollBulk(id, file, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR)
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
   @Get(':id/enrollments')
   listEnrollments(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
     return this.coursesService.listEnrollments(id, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR)
+  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
   @Delete(':id/enrollments/:studentId')
   async removeEnrollment(
     @Param('id', ParseUUIDPipe) id: string,

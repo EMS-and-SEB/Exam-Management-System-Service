@@ -294,7 +294,7 @@ model Answer {
   examQuestionId String    @db.Uuid
   responseData   Json?
   isCorrect      Boolean?
-  pointsAwarded  Int?
+  pointsAwarded  Float?
   gradedById     String?   @db.Uuid
   gradedAt       DateTime?
 

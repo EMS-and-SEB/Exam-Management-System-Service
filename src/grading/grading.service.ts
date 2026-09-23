@@ -12,6 +12,10 @@ const TERMINAL_STATUSES: SessionStatus[] = [
   SessionStatus.EXPIRED,
 ];
 
+function formatScore(score: number): number {
+  return Number(score.toFixed(2));
+}
+
 @Injectable()
 export class GradingService {
   constructor(
@@ -90,10 +94,10 @@ export class GradingService {
         studentId: s.student.id,
         student: { studentId: s.student.studentId, name: s.student.name },
         status: s.status,
-        autoScore,
-        manualScore,
-        totalScore: autoScore + manualScore,
-        maxScore,
+        autoScore: formatScore(autoScore),
+        manualScore: formatScore(manualScore),
+        totalScore: formatScore(autoScore + manualScore),
+        maxScore: formatScore(maxScore),
         needsGrading,
       };
     });
@@ -135,10 +139,11 @@ export class GradingService {
       type: a.examQuestion.type,
       prompt: a.examQuestion.prompt,
       points: a.examQuestion.points,
+      options: a.examQuestion.options,
       responseData: a.responseData,
       correctAnswer: a.examQuestion.correctAnswer,
       isCorrect: a.isCorrect,
-      pointsAwarded: a.pointsAwarded,
+      pointsAwarded: a.pointsAwarded === null ? null : formatScore(a.pointsAwarded),
       gradedAt: a.gradedAt,
     })),
   };
@@ -189,7 +194,7 @@ export class GradingService {
     return {
       answer: {
         id: updated.id,
-        pointsAwarded: updated.pointsAwarded,
+        pointsAwarded: updated.pointsAwarded === null ? null : formatScore(updated.pointsAwarded),
         gradedById: updated.gradedById,
         gradedAt: updated.gradedAt,
       },
@@ -230,7 +235,7 @@ export class GradingService {
       return [
         r.student.studentId,
         r.student.name,
-        s && s.status !== SessionStatus.NOT_STARTED ? score : '-',
+        s && s.status !== SessionStatus.NOT_STARTED ? formatScore(score) : '-',
       ];
     });
 
@@ -277,7 +282,7 @@ export class GradingService {
 
         if (session && session.status !== SessionStatus.NOT_STARTED) {
           const score = session.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
-          scores[exam.id] = { score, maxScore };
+          scores[exam.id] = { score: formatScore(score), maxScore: formatScore(maxScore) };
           totalScore += score;
         } else {
           scores[exam.id] = null;
@@ -288,7 +293,7 @@ export class GradingService {
         studentId: enrollment.student.studentId,
         name: enrollment.student.name,
         scores,
-        aggregate: totalScore,
+        aggregate: formatScore(totalScore),
       };
     });
   }
@@ -343,7 +348,7 @@ export class GradingService {
           continue;
         }
         const score = session?.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0) ?? 0;
-        row.push(score);
+        row.push(formatScore(score));
       }
       return row;
     });
@@ -388,7 +393,7 @@ export class GradingService {
 
         if (session && session.status !== SessionStatus.NOT_STARTED) {
           const score = session.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
-          scores[exam.id] = { score, maxScore };
+          scores[exam.id] = { score: formatScore(score), maxScore: formatScore(maxScore) };
           totalScore += score;
         } else {
           scores[exam.id] = null;
@@ -399,7 +404,7 @@ export class GradingService {
         studentId: m.student.studentId,
         name: m.student.name,
         scores,
-        aggregate: totalScore,
+        aggregate: formatScore(totalScore),
       };
     });
   }
@@ -445,7 +450,7 @@ export class GradingService {
           continue;
         }
         const score = session?.answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0) ?? 0;
-        row.push(score);
+        row.push(formatScore(score));
       }
       return row;
     });

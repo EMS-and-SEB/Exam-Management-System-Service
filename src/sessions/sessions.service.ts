@@ -368,12 +368,17 @@ export class SessionsService {
       const q = ans.examQuestion;
       if (!AUTO_GRADED_TYPES.includes(q.type)) continue;
       if (!q.correctAnswer) continue;
-      const isCorrect = this.isCorrectAnswer(
+      const scoreRatio = this.getScoreRatio(
         q.type,
         q.correctAnswer,
         ans.responseData,
       );
-      const pointsAwarded = isCorrect ? q.points : 0;
+      const isCorrect = this.isFullyCorrectAnswer(
+        q.type,
+        q.correctAnswer,
+        ans.responseData,
+      );
+      const pointsAwarded = q.points * scoreRatio;
       await this.prisma.answer.update({
         where: { id: ans.id },
         data: { isCorrect, pointsAwarded },
@@ -381,7 +386,52 @@ export class SessionsService {
     }
   }
 
-  private isCorrectAnswer(
+  private getScoreRatio(
+    type: QuestionType,
+    correct: unknown,
+    response: unknown,
+  ): number {
+    if (response === null || response === undefined) return 0;
+    switch (type) {
+      case QuestionType.TRUE_FALSE:
+      case QuestionType.MULTIPLE_CHOICE:
+        return correct === response ? 1 : 0;
+      case QuestionType.MULTIPLE_SELECT: {
+        const c = correct as string[];
+        const r = response as string[];
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length === 0) return 0;
+        const correctIds = new Set(c);
+        const correctSelections = new Set(r.filter((id) => correctIds.has(id)));
+        return correctSelections.size / correctIds.size;
+      }
+      case QuestionType.MATCHING: {
+        const c = correct as { leftId: string; rightId: string }[];
+        const r = response as { leftId: string; rightId: string }[];
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length === 0) return 0;
+        const key = (p: { leftId: string; rightId: string }) =>
+          `${p.leftId}:${p.rightId}`;
+        const correctPairs = new Set(c.map(key));
+        const correctMatches = new Set(r.map(key).filter((pair) => correctPairs.has(pair)));
+        return correctMatches.size / correctPairs.size;
+      }
+      case QuestionType.FILL_BLANK: {
+        const c = correct as string[];
+        const r = response as string[];
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length) return 0;
+        return c.every(
+          (ans, i) =>
+            String(ans).toLowerCase().trim() ===
+            String(r[i] ?? '')
+              .toLowerCase()
+              .trim(),
+        ) ? 1 : 0;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  private isFullyCorrectAnswer(
     type: QuestionType,
     correct: unknown,
     response: unknown,
@@ -394,34 +444,20 @@ export class SessionsService {
       case QuestionType.MULTIPLE_SELECT: {
         const c = correct as string[];
         const r = response as string[];
-        if (!Array.isArray(c) || !Array.isArray(r)) return false;
-        if (c.length !== r.length) return false;
-        const sC = new Set(c);
-        return r.every((x) => sC.has(x));
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length) return false;
+        const correctIds = new Set(c);
+        return new Set(r).size === correctIds.size && r.every((id) => correctIds.has(id));
       }
       case QuestionType.MATCHING: {
         const c = correct as { leftId: string; rightId: string }[];
         const r = response as { leftId: string; rightId: string }[];
-        if (!Array.isArray(c) || !Array.isArray(r)) return false;
-        if (c.length !== r.length) return false;
-        const key = (p: { leftId: string; rightId: string }) =>
-          `${p.leftId}:${p.rightId}`;
-        const sC = new Set(c.map(key));
-        return r.every((p) => sC.has(key(p)));
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length) return false;
+        const key = (p: { leftId: string; rightId: string }) => `${p.leftId}:${p.rightId}`;
+        const correctPairs = new Set(c.map(key));
+        return new Set(r.map(key)).size === correctPairs.size && r.every((pair) => correctPairs.has(key(pair)));
       }
-      case QuestionType.FILL_BLANK: {
-        const c = correct as string[];
-        const r = response as string[];
-        if (!Array.isArray(c) || !Array.isArray(r)) return false;
-        if (c.length !== r.length) return false;
-        return c.every(
-          (ans, i) =>
-            String(ans).toLowerCase().trim() ===
-            String(r[i] ?? '')
-              .toLowerCase()
-              .trim(),
-        );
-      }
+      case QuestionType.FILL_BLANK:
+        return this.getScoreRatio(type, correct, response) === 1;
       default:
         return false;
     }
