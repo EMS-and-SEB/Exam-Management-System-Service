@@ -22,6 +22,10 @@ const AUTO_GRADED_TYPES: QuestionType[] = [
   QuestionType.FILL_BLANK,
 ];
 
+function formatScore(score: number): number {
+  return Number(score.toFixed(2));
+}
+
 @Injectable()
 export class SessionsService {
   constructor(
@@ -498,10 +502,10 @@ export class SessionsService {
     const hasManual = examQs.some((q) => !AUTO_GRADED_TYPES.includes(q.type));
 
     if (hasManual) {
-      return { maxScore };
+      return { maxScore: formatScore(maxScore) };
     }
 
     const score = answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0);
-    return { score, maxScore };
+    return { score: formatScore(score), maxScore: formatScore(maxScore) };
   }
 }

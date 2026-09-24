@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -27,9 +28,9 @@ export class StaffController {
   }
 
   @Get()
-  @Roles(StaffRole.EXAM_ADMIN)
-  async findAll(@Query() query: StaffQueryDto) {
-    return this.staffService.findAll(query);
+  @Roles(StaffRole.EXAM_ADMIN, StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
+  async findAll(@Query() query: StaffQueryDto, @CurrentUser() user: JwtPayload) {
+    return this.staffService.findAll(query, user.role);
   }
 
   @Get('me')
@@ -54,5 +55,17 @@ export class StaffController {
   @Roles(StaffRole.EXAM_ADMIN)
   update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStaffDto, @CurrentUser() user: JwtPayload) {
     return this.staffService.update(id, dto, user.sub);
+  }
+
+  @Delete(':id/courses/:courseId')
+  @Roles(StaffRole.EXAM_ADMIN)
+  unassignCourse(@Param('id', ParseUUIDPipe) id: string, @Param('courseId', ParseUUIDPipe) courseId: string) {
+    return this.staffService.unassignCourse(id, courseId);
+  }
+
+  @Delete(':id/cohorts/:cohortId')
+  @Roles(StaffRole.EXAM_ADMIN)
+  unassignCohort(@Param('id', ParseUUIDPipe) id: string, @Param('cohortId', ParseUUIDPipe) cohortId: string) {
+    return this.staffService.unassignCohort(id, cohortId);
   }
 }

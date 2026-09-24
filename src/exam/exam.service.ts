@@ -100,6 +100,10 @@ export class ExamService {
           ...(scope.cohortId ? [{ cohortId: scope.cohortId }] : []),
         ],
       },
+      include: {
+        course: { select: { name: true } },
+        cohort: { select: { name: true } },
+      },
     });
 
     const maxScoreRows = await this.prisma.examQuestion.groupBy({
@@ -237,8 +241,9 @@ export class ExamService {
     const staff = await this.prisma.staffAccount.findUnique({
       where: { id: invigilatorId },
     });
-    if (!staff || !staff.isActive)
+    if (!staff || !staff.isActive || staff.role !== StaffRole.INVIGILATOR) {
       throw AppException.badRequest('Invalid invigilator.');
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const previous = await tx.examInvigilator.findFirst({

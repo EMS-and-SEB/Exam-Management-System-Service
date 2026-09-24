@@ -130,6 +130,47 @@ export class AuthService {
     await this.revokeAllSessions(reset.staffId);
   }
 
+  async verifyStaffInvitation(token: string) {
+    const invitation = await this.prisma.staffInvitation.findFirst({
+      where: {
+        tokenHash: sha256Hash(token),
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { staff: { select: { name: true, email: true } } },
+    });
+    if (!invitation) throw AppException.badRequest('This invitation is invalid or has expired.');
+    return { name: invitation.staff.name, email: invitation.staff.email };
+  }
+
+  async completeStaffInvitation(token: string, newPassword: string) {
+    const invitation = await this.prisma.staffInvitation.findFirst({
+      where: {
+        tokenHash: sha256Hash(token),
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!invitation) throw AppException.badRequest('This invitation is invalid or has expired.');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.staffAccount.update({
+        where: { id: invitation.staffId },
+        data: { passwordHash: await bcryptHash(newPassword) },
+      });
+      await tx.staffInvitation.update({
+        where: { id: invitation.id },
+        data: { consumedAt: new Date() },
+      });
+      await this.auditService.log(
+        { actorId: invitation.staffId, action: AuditAction.STAFF_INVITATION_ACCEPTED, entityType: 'StaffAccount', entityId: invitation.staffId },
+        tx,
+      );
+    });
+
+    await this.revokeAllSessions(invitation.staffId);
+  }
+
   async revokeAllSessions(staffId: string, tx: Prisma.TransactionClient | PrismaService = this.prisma) {
     await tx.refreshToken.updateMany({ where: { staffId, revokedAt: null }, data: { revokedAt: new Date() } });
   }

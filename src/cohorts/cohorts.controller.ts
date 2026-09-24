@@ -36,7 +36,7 @@ export class CohortsController {
 
   
   @Post(':id/members/bulk')
-  @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
+  @Roles(StaffRole.EXIT_EXAM_COORDINATOR, StaffRole.EXAM_ADMIN)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
   addBulk(
     @Param('id', ParseUUIDPipe) id: string,
@@ -48,13 +48,13 @@ export class CohortsController {
   }
 
   @Post(':id/members')
-  @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
+  @Roles(StaffRole.EXIT_EXAM_COORDINATOR, StaffRole.EXAM_ADMIN)
   async add(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload, @Body() dto: AddMemberDto) {
     return this.cohortsService.addOne(id, dto.studentId, dto.name, { staffId: user.sub, role: user.role });
   }
 
   @Post(':id/members/select')
-  @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
+  @Roles(StaffRole.EXIT_EXAM_COORDINATOR, StaffRole.EXAM_ADMIN)
   addSelected(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AddMembersSelectedDto, @CurrentUser() user: JwtPayload) {
     return this.cohortsService.addSelected(id, dto.studentIds, { staffId: user.sub, role: user.role });
   }
@@ -66,7 +66,7 @@ export class CohortsController {
   }
 
   @Delete(':id/members/:studentId')
-  @Roles(StaffRole.EXIT_EXAM_COORDINATOR)
+  @Roles(StaffRole.EXIT_EXAM_COORDINATOR, StaffRole.EXAM_ADMIN)
   async removeMember(
     @Param('id', ParseUUIDPipe) id: string,
     @Param('studentId') studentId: string,

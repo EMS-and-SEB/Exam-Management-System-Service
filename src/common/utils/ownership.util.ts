@@ -10,7 +10,7 @@ export function buildOwnerScopeWhere(
   return { [ownerField]: callerId };
 }
 
-export function assertOwnsOrIsAdmin(ownerId: string, callerId: string, role: StaffRole): void {
+export function assertOwnsOrIsAdmin(ownerId: string | null, callerId: string, role: StaffRole): void {
   if (role === StaffRole.EXAM_ADMIN) return;
-  if (ownerId !== callerId) throw AppException.forbidden();
+  if (ownerId === null || ownerId !== callerId) throw AppException.forbidden();
 }
