@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '../common/exceptions/app-exceptions.js';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import {
   ExamStatus,
   Prisma,
@@ -11,8 +13,6 @@ import type {
   SaveAnswerDto,
   StudentLoginDto,
 } from './validation/sessions.dto.js';
-// import { JwtService } from '@nestjs/jwt';
-// import { ConfigService } from '@nestjs/config';
 
 const AUTO_GRADED_TYPES: QuestionType[] = [
   QuestionType.TRUE_FALSE,
@@ -30,19 +30,20 @@ function formatScore(score: number): number {
 export class SessionsService {
   constructor(
     private readonly prisma: PrismaService,
-    // private readonly jwtService: JwtService,
-    // private readonly configService: ConfigService,    
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
   // ---------------- LOGIN ----------------
   async studentLogin(dto: StudentLoginDto) {
-    // try {
-    //   this.jwtService.verify(dto.handshakeToken, {
-    //     secret: this.configService.getOrThrow<string>('seb.handshakeSecret'),
-    //   });
-    // } catch {
-    //   throw AppException.unauthorized('A valid SEB handshake is required to log in.');
-    // }
+    // 1. Enforce SEB Handshake
+    try {
+      this.jwtService.verify(dto.handshakeToken, {
+        secret: this.configService.getOrThrow<string>('seb.handshakeSecret'),
+      });
+    } catch {
+      throw AppException.unauthorized('A valid SEB handshake is required to log in.');
+    }
 
     const otp = await this.prisma.examOTP.findFirst({
       where: { code: dto.otp },
@@ -121,8 +122,14 @@ export class SessionsService {
       return { ...safe, options: this.applyOptionOrder(q, optionOrder) };
     });
 
+    // 2. Generate secure JWT instead of raw UUID
+    const sessionToken = this.jwtService.sign(
+      { sub: session.id, type: 'student-session' },
+      { secret: this.configService.getOrThrow<string>('jwt.accessSecret'), expiresIn: '4h' }
+    );
+
     return {
-      sessionToken: session.id,
+      sessionToken,
       exam: { id: exam.id, title: exam.title, examType: exam.examType },
       endsAt: session.endsAt,
       examQuestions: safeQuestions,
