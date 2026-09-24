@@ -31,7 +31,7 @@ export class SessionsService {
   constructor(
     private readonly prisma: PrismaService,
     // private readonly jwtService: JwtService,
-    // private readonly configService: ConfigService,    
+    // private readonly configService: ConfigService,
   ) {}
 
   // ---------------- LOGIN ----------------
@@ -126,6 +126,7 @@ export class SessionsService {
       exam: { id: exam.id, title: exam.title, examType: exam.examType },
       endsAt: session.endsAt,
       examQuestions: safeQuestions,
+      student: { name: student.name, studentId: student.studentId },
     };
   }
 
@@ -415,20 +416,25 @@ export class SessionsService {
         const key = (p: { leftId: string; rightId: string }) =>
           `${p.leftId}:${p.rightId}`;
         const correctPairs = new Set(c.map(key));
-        const correctMatches = new Set(r.map(key).filter((pair) => correctPairs.has(pair)));
+        const correctMatches = new Set(
+          r.map(key).filter((pair) => correctPairs.has(pair)),
+        );
         return correctMatches.size / correctPairs.size;
       }
       case QuestionType.FILL_BLANK: {
         const c = correct as string[];
         const r = response as string[];
-        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length) return 0;
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length)
+          return 0;
         return c.every(
           (ans, i) =>
             String(ans).toLowerCase().trim() ===
             String(r[i] ?? '')
               .toLowerCase()
               .trim(),
-        ) ? 1 : 0;
+        )
+          ? 1
+          : 0;
       }
       default:
         return 0;
@@ -448,17 +454,26 @@ export class SessionsService {
       case QuestionType.MULTIPLE_SELECT: {
         const c = correct as string[];
         const r = response as string[];
-        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length) return false;
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length)
+          return false;
         const correctIds = new Set(c);
-        return new Set(r).size === correctIds.size && r.every((id) => correctIds.has(id));
+        return (
+          new Set(r).size === correctIds.size &&
+          r.every((id) => correctIds.has(id))
+        );
       }
       case QuestionType.MATCHING: {
         const c = correct as { leftId: string; rightId: string }[];
         const r = response as { leftId: string; rightId: string }[];
-        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length) return false;
-        const key = (p: { leftId: string; rightId: string }) => `${p.leftId}:${p.rightId}`;
+        if (!Array.isArray(c) || !Array.isArray(r) || c.length !== r.length)
+          return false;
+        const key = (p: { leftId: string; rightId: string }) =>
+          `${p.leftId}:${p.rightId}`;
         const correctPairs = new Set(c.map(key));
-        return new Set(r.map(key)).size === correctPairs.size && r.every((pair) => correctPairs.has(key(pair)));
+        return (
+          new Set(r.map(key)).size === correctPairs.size &&
+          r.every((pair) => correctPairs.has(key(pair)))
+        );
       }
       case QuestionType.FILL_BLANK:
         return this.getScoreRatio(type, correct, response) === 1;
