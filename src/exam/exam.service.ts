@@ -96,6 +96,7 @@ export class ExamService {
       where: {
         AND: [
           this.buildAccessWhere(caller),
+          { dataPurgedAt: null },
           ...(scope.courseId ? [{ courseId: scope.courseId }] : []),
           ...(scope.cohortId ? [{ cohortId: scope.cohortId }] : []),
         ],
