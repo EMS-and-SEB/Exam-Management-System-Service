@@ -2,6 +2,7 @@ export default () => ({
   app: {
     port: Number(process.env.PORT ?? 3000),
     environment: process.env.NODE_ENV ?? 'development',
+    staffPortalUrl: process.env.STAFF_PORTAL_URL ?? 'http://localhost:5173',
     corsOrigins: (process.env.CORS_ORIGIN ?? '')
       .split(',')
       .map((origin) => origin.trim())

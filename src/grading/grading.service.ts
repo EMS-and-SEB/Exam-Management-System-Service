@@ -38,8 +38,8 @@ export class GradingService {
 
   private assertExamOwnership(
     exam: {
-      course: { instructorId: string } | null;
-      cohort: { coordinatorId: string } | null;
+      course: { instructorId: string | null } | null;
+      cohort: { coordinatorId: string | null } | null;
     },
     user: JwtPayload,
   ) {
@@ -51,7 +51,7 @@ export class GradingService {
   }
 
   private assertCourseOwnership(
-    course: { instructorId: string } | null,
+    course: { instructorId: string | null } | null,
     user: JwtPayload,
   ) {
     if (!course || course.instructorId !== user.sub) {
@@ -60,7 +60,7 @@ export class GradingService {
   }
 
   private assertCohortOwnership(
-    cohort: { coordinatorId: string } | null,
+    cohort: { coordinatorId: string | null } | null,
     user: JwtPayload,
   ) {
     if (!cohort || cohort.coordinatorId !== user.sub) {

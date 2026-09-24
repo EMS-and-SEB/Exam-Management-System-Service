@@ -10,6 +10,8 @@ import {
   PasswordResetConfirmDto,
   PasswordResetRequestDto,
   PasswordResetVerifyDto,
+  StaffInvitationDto,
+  StaffInvitationCompleteDto,
 } from './validation/auth.dto.js';
 
 const REFRESH_COOKIE = 'refresh_token';
@@ -76,6 +78,19 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async confirmPasswordReset(@Body() dto: PasswordResetConfirmDto) {
     await this.authService.confirmPasswordReset(dto.resetToken, dto.newPassword);
+    return { success: true };
+  }
+
+  @Public()
+  @Post('staff/invitation/verify')
+  verifyStaffInvitation(@Body() dto: StaffInvitationDto) {
+    return this.authService.verifyStaffInvitation(dto.token);
+  }
+
+  @Public()
+  @Post('staff/invitation/complete')
+  async completeStaffInvitation(@Body() dto: StaffInvitationCompleteDto) {
+    await this.authService.completeStaffInvitation(dto.token, dto.newPassword);
     return { success: true };
   }
 

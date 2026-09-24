@@ -21,3 +21,13 @@ export const passwordResetConfirmSchema = z.object({
   newPassword: z.string().min(8, 'Password must be at least 8 characters.'),
 });
 export class PasswordResetConfirmDto extends createZodDto(passwordResetConfirmSchema) {}
+
+export const staffInvitationSchema = z.object({
+  token: z.string().min(1),
+});
+export class StaffInvitationDto extends createZodDto(staffInvitationSchema) {}
+
+export const staffInvitationCompleteSchema = staffInvitationSchema.extend({
+  newPassword: z.string().min(8, 'Password must be at least 8 characters.'),
+});
+export class StaffInvitationCompleteDto extends createZodDto(staffInvitationCompleteSchema) {}

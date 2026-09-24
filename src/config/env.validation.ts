@@ -10,6 +10,7 @@ export const envSchema = z.object({
     (origins) => origins.split(',').every((origin) => z.url().safeParse(origin.trim()).success),
     'CORS_ORIGIN must contain valid comma-separated URLs',
   ),
+  STAFF_PORTAL_URL: z.url().default('http://localhost:5173'),
 
   DATABASE_URL: z.url('DATABASE_URL must be a valid URL').startsWith('postgresql://', {
     message: 'DATABASE_URL must be a PostgreSQL connection string (postgresql://...)',
