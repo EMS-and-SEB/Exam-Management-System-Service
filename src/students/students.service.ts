@@ -96,7 +96,7 @@ export class StudentsService {
     });
   }
 
-  async bulkImport(fileBuffer: Buffer) {
+  async importStudents(fileBuffer: Buffer) {
     const { rows, errors } = parseRosterCsv(fileBuffer);
     if (rows.length === 0) return { created: 0, updated: 0, errors };
 

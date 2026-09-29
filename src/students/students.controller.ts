@@ -29,15 +29,15 @@ export class StudentsController {
     return this.studentsService.create(dto);
   }
 
-  @Post('bulk')
+  @Post('import')
   @Roles(StaffRole.EXAM_ADMIN)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
-  async bulkImport(@UploadedFile() file: Express.Multer.File | undefined) {
+  async importStudents(@UploadedFile() file: Express.Multer.File | undefined) {
     if (!file) throw AppException.badRequest('No file uploaded.');
     if (file.mimetype !== 'text/csv' && !file.originalname.endsWith('.csv')) {
       throw AppException.badRequest('Only CSV files are allowed.');
     }
-    return this.studentsService.bulkImport(file.buffer);
+    return this.studentsService.importStudents(file.buffer);
   }
 
   @Get()

@@ -59,9 +59,31 @@ export class CohortsService {
     });
   }
 
+  /**
+   * Adds a single member. Reactivates a previously-removed (soft-deleted)
+   * membership instead of inserting a second row for the same student, and
+   * rejects with a clean 409 if already an active member (the DB also
+   * enforces this via a partial unique index as a backstop).
+   */
   async addOne(cohortId: string, studentId: string, name: string, caller: CallerContext) {
     await this.assertOwnsCohort(cohortId, caller);
     const student = await this.studentsService.findOrCreateByStudentId(studentId, name);
+
+    const existing = await this.prisma.cohortMember.findFirst({
+      where: { cohortId, studentId: student.id },
+    });
+
+    if (existing) {
+      if (!existing.deletedAt) {
+        throw AppException.conflict('This student is already a member of this cohort.');
+      }
+      const member = await this.prisma.cohortMember.update({
+        where: { id: existing.id },
+        data: { deletedAt: null },
+      });
+      return { member };
+    }
+
     const member = await this.prisma.cohortMember.create({ data: { cohortId, studentId: student.id } });
     return { member };
   }
@@ -72,23 +94,30 @@ export class CohortsService {
     const uniqueIds = [...new Set(studentIds)];
 
     const existing = await this.prisma.cohortMember.findMany({
-      where: { cohortId, studentId: { in: uniqueIds }, deletedAt: null },
-      select: { studentId: true },
+      where: { cohortId, studentId: { in: uniqueIds } },
+      select: { id: true, studentId: true, deletedAt: true },
     });
-    const existingSet = new Set(existing.map((m) => m.studentId));
-    const toAdd = uniqueIds.filter((id) => !existingSet.has(id));
+    const activeCount = existing.filter((m) => !m.deletedAt).length;
+    const removedRowIds = existing.filter((m) => m.deletedAt).map((m) => m.id);
+    const knownIds = new Set(existing.map((m) => m.studentId));
+    const toAdd = uniqueIds.filter((id) => !knownIds.has(id));
 
-    if (toAdd.length > 0) {
-      await this.prisma.cohortMember.createMany({
-        data: toAdd.map((studentId) => ({ cohortId, studentId })),
-        skipDuplicates: true,
-      });
-    }
+    await this.prisma.$transaction([
+      ...(removedRowIds.length > 0
+        ? [this.prisma.cohortMember.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } })]
+        : []),
+      ...(toAdd.length > 0
+        ? [this.prisma.cohortMember.createMany({
+            data: toAdd.map((studentId) => ({ cohortId, studentId })),
+            skipDuplicates: true,
+          })]
+        : []),
+    ]);
 
-    return { added: toAdd.length, alreadyMember: existingSet.size };
+    return { added: removedRowIds.length + toAdd.length, alreadyMember: activeCount };
   }
 
-  async addBulk(cohortId: string, file: Express.Multer.File, caller: CallerContext) {
+  async addImport(cohortId: string, file: Express.Multer.File, caller: CallerContext) {
     await this.assertOwnsCohort(cohortId, caller);
     const { rows, errors } = parseRosterCsv(file.buffer);
     if (rows.length === 0) return { created: 0, alreadyExisted: 0, added: 0, errors };
@@ -98,39 +127,44 @@ export class CohortsService {
     const existingStudents = await this.prisma.studentDirectory.findMany({
       where: { studentId: { in: studentIds } },
     });
-    const knownIds = new Set(existingStudents.map((s) => s.studentId));
+    const knownStudentIds = new Set(existingStudents.map((s) => s.studentId));
     const newRows = [...new Map(
-      rows.filter((r) => !knownIds.has(r.studentId)).map((r) => [r.studentId, r]),
+      rows.filter((r) => !knownStudentIds.has(r.studentId)).map((r) => [r.studentId, r]),
     ).values()];
 
-    const existingMembers = await this.prisma.cohortMember.findMany({
-      where: { cohortId, deletedAt: null },
-      select: { studentId: true },
-    });
-    const alreadyMemberSet = new Set(existingMembers.map((m) => m.studentId));
-
-    const [, toAdd] = await this.prisma.$transaction(async (tx) => {
-      const created = newRows.length > 0
+    const { created, added } = await this.prisma.$transaction(async (tx) => {
+      const createdStudents = newRows.length > 0
         ? await tx.studentDirectory.createManyAndReturn({
             data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
             skipDuplicates: true,
           })
         : [];
 
-      const allStudents = [...existingStudents, ...created];
-      const toAddList = allStudents.filter((s) => !alreadyMemberSet.has(s.id));
+      const allStudents = [...existingStudents, ...createdStudents];
 
-      if (toAddList.length > 0) {
+      const existingMembers = await tx.cohortMember.findMany({
+        where: { cohortId, studentId: { in: allStudents.map((s) => s.id) } },
+        select: { id: true, studentId: true, deletedAt: true },
+      });
+      const removedRowIds = existingMembers.filter((m) => m.deletedAt).map((m) => m.id);
+      const alreadyLinkedIds = new Set(existingMembers.map((m) => m.studentId));
+
+      if (removedRowIds.length > 0) {
+        await tx.cohortMember.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } });
+      }
+
+      const toAdd = allStudents.filter((s) => !alreadyLinkedIds.has(s.id));
+      if (toAdd.length > 0) {
         await tx.cohortMember.createMany({
-          data: toAddList.map((s) => ({ cohortId, studentId: s.id })),
+          data: toAdd.map((s) => ({ cohortId, studentId: s.id })),
           skipDuplicates: true,
         });
       }
 
-      return [created, toAddList] as const;
+      return { created: createdStudents, added: toAdd.length + removedRowIds.length };
     });
 
-    return { created: newRows.length, alreadyExisted: existingStudents.length, added: toAdd.length, errors };
+    return { created: created.length, alreadyExisted: existingStudents.length, added, errors };
   }
 
   async listMembers(cohortId: string, caller: CallerContext) {
@@ -155,14 +189,26 @@ export class CohortsService {
       },
     });
 
-    if (hasTakenExam) {
-      await this.prisma.cohortMember.update({
-        where: { id: member.id },
-        data: { deletedAt: new Date() },
-      });
-    } else {
-      await this.prisma.cohortMember.delete({ where: { id: member.id } });
-    }
+    await this.prisma.$transaction(async (tx) => {
+      if (hasTakenExam) {
+        await tx.cohortMember.update({
+          where: { id: member.id },
+          data: { deletedAt: new Date() },
+        });
+      } else {
+        await tx.cohortMember.delete({ where: { id: member.id } });
+      }
+      await this.auditService.log(
+        {
+          actorId: caller.staffId,
+          action: AuditAction.COHORT_MEMBER_REMOVED,
+          entityType: 'CohortMember',
+          entityId: member.id,
+          metadata: { cohortId, studentId, historyPreserved: Boolean(hasTakenExam) },
+        },
+        tx,
+      );
+    });
   }
 
   private async assertOwnsCohort(cohortId: string, caller: CallerContext) {
