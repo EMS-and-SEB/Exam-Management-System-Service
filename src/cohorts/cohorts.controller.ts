@@ -35,16 +35,16 @@ export class CohortsController {
     }
 
   
-  @Post(':id/members/bulk')
+  @Post(':id/members/import')
   @Roles(StaffRole.EXIT_EXAM_COORDINATOR, StaffRole.EXAM_ADMIN)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
-  addBulk(
+  addImport(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() user: JwtPayload,
   ) {
     if (!file) throw AppException.badRequest('A CSV file is required.');
-    return this.cohortsService.addBulk(id, file, { staffId: user.sub, role: user.role });
+    return this.cohortsService.addImport(id, file, { staffId: user.sub, role: user.role });
   }
 
   @Post(':id/members')

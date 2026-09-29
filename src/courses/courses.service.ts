@@ -44,7 +44,7 @@ export class CoursesService {
     return course;
   }
 
- async update(id: string, data: { name?: string; instructorId?: string; status?: CourseStatus }, callerId: string) {
+async update(id: string, data: { name?: string; instructorId?: string; status?: CourseStatus }, callerId: string) {
     const course = await this.prisma.course.findUnique({ where: { id } });
     if (!course) throw AppException.notFound('Course not found.');
     const isArchiving = data.status === 'ARCHIVED' && course.status !== 'ARCHIVED';
@@ -60,10 +60,26 @@ export class CoursesService {
       return updated;
     });
   }
-
+  
   async enrollOne(courseId: string, studentId: string, name: string, caller: CallerContext) {
     await this.assertOwnsCourse(courseId, caller);
     const student = await this.studentsService.findOrCreateByStudentId(studentId, name);
+
+    const existing = await this.prisma.enrollment.findFirst({
+      where: { courseId, studentId: student.id },
+    });
+
+    if (existing) {
+      if (!existing.deletedAt) {
+        throw AppException.conflict('This student is already enrolled in this course.');
+      }
+      const enrollment = await this.prisma.enrollment.update({
+        where: { id: existing.id },
+        data: { deletedAt: null },
+      });
+      return { enrollment };
+    }
+
     const enrollment = await this.prisma.enrollment.create({
       data: { courseId, studentId: student.id },
     });
@@ -76,23 +92,30 @@ export class CoursesService {
     const uniqueIds = [...new Set(studentIds)];
 
     const existing = await this.prisma.enrollment.findMany({
-      where: { courseId, studentId: { in: uniqueIds }, deletedAt: null },
-      select: { studentId: true },
+      where: { courseId, studentId: { in: uniqueIds } },
+      select: { id: true, studentId: true, deletedAt: true },
     });
-    const existingSet = new Set(existing.map((e) => e.studentId));
-    const toEnroll = uniqueIds.filter((id) => !existingSet.has(id));
+    const activeCount = existing.filter((e) => !e.deletedAt).length;
+    const removedRowIds = existing.filter((e) => e.deletedAt).map((e) => e.id);
+    const knownIds = new Set(existing.map((e) => e.studentId));
+    const toCreate = uniqueIds.filter((id) => !knownIds.has(id));
 
-    if (toEnroll.length > 0) {
-      await this.prisma.enrollment.createMany({
-        data: toEnroll.map((studentId) => ({ courseId, studentId })),
-        skipDuplicates: true,
-      });
-    }
+    await this.prisma.$transaction([
+      ...(removedRowIds.length > 0
+        ? [this.prisma.enrollment.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } })]
+        : []),
+      ...(toCreate.length > 0
+        ? [this.prisma.enrollment.createMany({
+            data: toCreate.map((studentId) => ({ courseId, studentId })),
+            skipDuplicates: true,
+          })]
+        : []),
+    ]);
 
-    return { enrolled: toEnroll.length, alreadyEnrolled: existingSet.size };
+    return { enrolled: removedRowIds.length + toCreate.length, alreadyEnrolled: activeCount };
   }
 
-  async enrollBulk(courseId: string, file: Express.Multer.File, caller: CallerContext) {
+  async enrollImport(courseId: string, file: Express.Multer.File, caller: CallerContext) {
     await this.assertOwnsCourse(courseId, caller);
     const { rows, errors } = parseRosterCsv(file.buffer);
     if (rows.length === 0) return { created: 0, alreadyExisted: 0, enrolled: 0, errors };
@@ -102,40 +125,46 @@ export class CoursesService {
     const existingStudents = await this.prisma.studentDirectory.findMany({
       where: { studentId: { in: studentIds } },
     });
-    const knownIds = new Set(existingStudents.map((s) => s.studentId));
+    const knownStudentIds = new Set(existingStudents.map((s) => s.studentId));
     const newRows = [...new Map(
-      rows.filter((r) => !knownIds.has(r.studentId)).map((r) => [r.studentId, r]),
+      rows.filter((r) => !knownStudentIds.has(r.studentId)).map((r) => [r.studentId, r]),
     ).values()];
 
-    const existingEnrollments = await this.prisma.enrollment.findMany({
-      where: { courseId, deletedAt: null },
-      select: { studentId: true },
-    });
-    const alreadyEnrolledSet = new Set(existingEnrollments.map((e) => e.studentId));
-
-    const [newlyCreated, toEnroll] = await this.prisma.$transaction(async (tx) => {
-      const created = newRows.length > 0
+    const { created, enrolled } = await this.prisma.$transaction(async (tx) => {
+      const createdStudents = newRows.length > 0
         ? await tx.studentDirectory.createManyAndReturn({
             data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
             skipDuplicates: true,
           })
         : [];
 
-      const allStudents = [...existingStudents, ...created];
-      const toEnrollList = allStudents.filter((s) => !alreadyEnrolledSet.has(s.id));
+      const allStudents = [...existingStudents, ...createdStudents];
 
-      if (toEnrollList.length > 0) {
+      const existingEnrollments = await tx.enrollment.findMany({
+        where: { courseId, studentId: { in: allStudents.map((s) => s.id) } },
+        select: { id: true, studentId: true, deletedAt: true },
+      });
+      const removedRowIds = existingEnrollments.filter((e) => e.deletedAt).map((e) => e.id);
+      const alreadyLinkedIds = new Set(existingEnrollments.map((e) => e.studentId));
+
+      if (removedRowIds.length > 0) {
+        await tx.enrollment.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } });
+      }
+
+      const toCreate = allStudents.filter((s) => !alreadyLinkedIds.has(s.id));
+      if (toCreate.length > 0) {
         await tx.enrollment.createMany({
-          data: toEnrollList.map((s) => ({ courseId, studentId: s.id })),
+          data: toCreate.map((s) => ({ courseId, studentId: s.id })),
           skipDuplicates: true,
         });
       }
 
-      return [created, toEnrollList];
+      return { created: createdStudents, enrolled: toCreate.length + removedRowIds.length };
     });
 
-    return { created: newRows.length, alreadyExisted: existingStudents.length, enrolled: toEnroll.length, errors };
+    return { created: created.length, alreadyExisted: existingStudents.length, enrolled, errors };
   }
+
   async listEnrollments(courseId: string, caller: CallerContext) {
     await this.assertOwnsCourse(courseId, caller);
     return this.prisma.enrollment.findMany({
@@ -160,11 +189,23 @@ export class CoursesService {
       },
     });
 
-    if (hasTakenExam) {
-      await this.prisma.enrollment.update({ where: { id: enrollment.id }, data: { deletedAt: new Date() } });
-    } else {
-      await this.prisma.enrollment.delete({ where: { id: enrollment.id } });
-    }
+    await this.prisma.$transaction(async (tx) => {
+      if (hasTakenExam) {
+        await tx.enrollment.update({ where: { id: enrollment.id }, data: { deletedAt: new Date() } });
+      } else {
+        await tx.enrollment.delete({ where: { id: enrollment.id } });
+      }
+      await this.auditService.log(
+        {
+          actorId: caller.staffId,
+          action: AuditAction.ENROLLMENT_REMOVED,
+          entityType: 'Enrollment',
+          entityId: enrollment.id,
+          metadata: { courseId, studentId: enrollment.studentId, historyPreserved: Boolean(hasTakenExam) },
+        },
+        tx,
+      );
+    });
   }
 
   private async assertOwnsCourse(courseId: string, caller: CallerContext) {

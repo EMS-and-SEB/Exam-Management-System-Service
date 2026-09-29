@@ -18,5 +18,7 @@ export const AuditAction = {
   FORCE_SUBMIT: 'FORCE_SUBMIT',
   DATA_PURGED: 'DATA_PURGED',
   RETENTION_POLICY_CHANGED: 'RETENTION_POLICY_CHANGED',
+  ENROLLMENT_REMOVED: 'ENROLLMENT_REMOVED',
+  COHORT_MEMBER_REMOVED: 'COHORT_MEMBER_REMOVED'
 } as const;
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];

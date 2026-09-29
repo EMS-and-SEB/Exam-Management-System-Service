@@ -42,22 +42,22 @@ export class CoursesController {
     return this.coursesService.enrollOne(id, dto.studentId, dto.name, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
+  @Roles(StaffRole.EXAM_ADMIN)
   @Post(':id/enrollments/select')
   enrollSelected(@Param('id', ParseUUIDPipe) id: string, @Body() dto: EnrollSelectedDto, @CurrentUser() user: JwtPayload) {
     return this.coursesService.enrollSelected(id, dto.studentIds, { staffId: user.sub, role: user.role });
   }
 
-  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
-  @Post(':id/enrollments/bulk')
+  @Roles(StaffRole.EXAM_ADMIN)
+  @Post(':id/enrollments/import')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
-  enrollBulk(
+  enrollImport(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() user: JwtPayload,
   ) {
     if (!file) throw AppException.badRequest('A CSV file is required.');
-    return this.coursesService.enrollBulk(id, file, { staffId: user.sub, role: user.role });
+    return this.coursesService.enrollImport(id, file, { staffId: user.sub, role: user.role });
   }
 
   @Roles(StaffRole.INSTRUCTOR, StaffRole.EXAM_ADMIN)
