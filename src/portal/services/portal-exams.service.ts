@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ExamStatus } from '../../generated/prisma/client.js';
+import { ExamStatus, QuestionType, SessionStatus } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
 @Injectable()
@@ -86,6 +86,96 @@ export class PortalExamsService {
           : { type: 'COHORT' as const, name: exam.cohort!.name },
         owner: { name: ownerName, email: ownerEmail },
         isOnRoster: exam.examRosters.length > 0,
+      };
+    });
+  }
+
+  /** Completed session statuses — mirrors GradingService terminal set. */
+  private static readonly TERMINAL_STATUSES = [
+    SessionStatus.SUBMITTED,
+    SessionStatus.FORCE_SUBMITTED,
+    SessionStatus.EXPIRED,
+  ] as const;
+
+  async getExamResults(studentDirectoryId: string) {
+    const sessions = await this.prisma.examSession.findMany({
+      where: {
+        studentId: studentDirectoryId,
+        status: { in: [...PortalExamsService.TERMINAL_STATUSES] },
+      },
+      select: {
+        id: true,
+        status: true,
+        submittedAt: true,
+        exam: {
+          select: {
+            id: true,
+            title: true,
+            examType: true,
+            // Fetch only type + points — never prompt, options, or correctAnswer.
+            examQuestions: {
+              select: { type: true, points: true },
+            },
+            course: { select: { name: true } },
+            cohort: { select: { name: true } },
+          },
+        },
+        // Fetch only what's needed for grading logic — never responseData.
+        answers: {
+          select: {
+            pointsAwarded: true,
+            gradedAt: true,
+            examQuestion: { select: { type: true } },
+          },
+        },
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+
+    return sessions.map((session) => {
+      const { exam, answers } = session;
+
+      const maxScore = exam.examQuestions.reduce((sum, q) => sum + q.points, 0);
+      const contextName = exam.course?.name ?? exam.cohort?.name ?? null;
+
+      // Mirrors the exact condition from GradingService.listExamSessions.
+      const needsGrading = answers.some(
+        (a) => a.examQuestion.type === QuestionType.WORKOUT && a.gradedAt === null,
+      );
+
+      if (needsGrading) {
+        return {
+          examId: exam.id,
+          examTitle: exam.title,
+          examType: exam.examType,
+          contextName,
+          submittedAt: session.submittedAt,
+          sessionStatus: session.status,
+          status: 'PENDING_GRADING' as const,
+          score: null,
+          maxScore,
+          gradingStatusMessage:
+            'Workout questions are currently being graded by your instructor.',
+        };
+      }
+
+      const score = Number(
+        answers.reduce((sum, a) => sum + (a.pointsAwarded ?? 0), 0).toFixed(2),
+      );
+      const percentage =
+        maxScore > 0 ? Number(((score / maxScore) * 100).toFixed(2)) : null;
+
+      return {
+        examId: exam.id,
+        examTitle: exam.title,
+        examType: exam.examType,
+        contextName,
+        submittedAt: session.submittedAt,
+        sessionStatus: session.status,
+        status: 'GRADED' as const,
+        score,
+        maxScore,
+        percentage,
       };
     });
   }

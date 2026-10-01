@@ -18,4 +18,15 @@ export class PortalExamsController {
   getIncomingExams(@CurrentUser() user: JwtPayload) {
     return this.portalExamsService.getIncomingExams(user.sub);
   }
+
+  /**
+   * GET /api/v1/portal/exams/results
+   * Returns completed exam sessions for the authenticated student.
+   * Scores are masked with `status: "PENDING_GRADING"` whenever any WORKOUT
+   * question in the exam has not yet been graded by the instructor.
+   */
+  @Get('results')
+  getExamResults(@CurrentUser() user: JwtPayload) {
+    return this.portalExamsService.getExamResults(user.sub);
+  }
 }
