@@ -1,10 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { ExamStatus, QuestionType, SessionStatus } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { EmailService } from '../../email/email.service.js';
+import { AuditService } from '../../audit/audit.service.js';
+import { AuditAction } from '../../audit/audit.const.js';
+import { AppException } from '../../common/exceptions/app-exceptions.js';
+import type { ExamInquiryDto } from '../validation/exam-inquiry.dto.js';
 
 @Injectable()
 export class PortalExamsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
+    private readonly auditService: AuditService,
+  ) {}
 
   async getIncomingExams(studentDirectoryId: string) {
     // Step 1: Resolve the student's active course and cohort IDs in parallel.
@@ -178,5 +187,92 @@ export class PortalExamsService {
         percentage,
       };
     });
+  }
+
+  async sendExamInquiry(
+    examId: string,
+    studentDirectoryId: string,
+    dto: ExamInquiryDto,
+  ) {
+    // Step 1: Load exam with ownership and context in a single query.
+    const exam = await this.prisma.exam.findUnique({
+      where: { id: examId },
+      select: {
+        id: true,
+        title: true,
+        course: {
+          select: {
+            name: true,
+            instructor: { select: { id: true, name: true, email: true } },
+          },
+        },
+        cohort: {
+          select: {
+            name: true,
+            coordinator: { select: { id: true, name: true, email: true } },
+          },
+        },
+        // Only fetch this student's roster row — take:1 stops scanning after first match.
+        examRosters: {
+          where: { studentId: studentDirectoryId },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+
+    if (!exam) throw AppException.notFound('Exam not found.');
+
+    // Step 2: Resolve the owner (instructor or coordinator) from the exam context.
+    const owner = exam.course?.instructor ?? exam.cohort?.coordinator ?? null;
+    const contextName = exam.course?.name ?? exam.cohort?.name ?? 'Unknown';
+
+    if (!owner?.email) {
+      throw AppException.badRequest(
+        'This exam has no assigned instructor or coordinator to contact.',
+      );
+    }
+
+    // Step 3: Fetch the student's display details.
+    const student = await this.prisma.studentDirectory.findUnique({
+      where: { id: studentDirectoryId },
+      select: { studentId: true, name: true },
+    });
+    if (!student) throw AppException.notFound('Student not found.');
+
+    const isOnRoster = exam.examRosters.length > 0;
+
+    // Step 4: Dispatch the email (non-blocking — audit regardless of delivery).
+    await this.emailService.sendExamInquiry({
+      to: owner.email,
+      recipientName: owner.name,
+      studentName: student.name,
+      studentId: student.studentId,
+      examTitle: exam.title,
+      courseOrCohortName: contextName,
+      isOnRoster,
+      subject: dto.subject,
+      message: dto.message,
+    });
+
+    // Step 5: Audit the inquiry for traceability.
+    await this.auditService.log({
+      actorId: studentDirectoryId,
+      action: AuditAction.STUDENT_EXAM_INQUIRY,
+      entityType: 'Exam',
+      entityId: examId,
+      metadata: {
+        recipientId: owner.id,
+        recipientEmail: owner.email,
+        isOnRoster,
+        subject: dto.subject,
+      },
+    });
+
+    return {
+      sent: true,
+      recipient: { name: owner.name, email: owner.email },
+      sentAt: new Date().toISOString(),
+    };
   }
 }
