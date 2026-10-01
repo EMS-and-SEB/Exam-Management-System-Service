@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { QuestionType, StaffRole } from '../generated/prisma/client.js';
 import { questionInputSchema, QuestionInput } from './validation/questions.dto.js';
+import type { UserRole } from '../auth/validation/auth.interface.js';
 
 interface ParentRef {
   courseId?: string;
@@ -11,7 +12,7 @@ interface ParentRef {
 
 interface CallerContext {
   staffId: string;
-  role: StaffRole;
+  role: UserRole;
 }
 
 @Injectable()

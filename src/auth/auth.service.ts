@@ -28,7 +28,7 @@ export class AuthService {
   const matches = await bcryptCompare(password, staff.passwordHash);
   if (!matches) throw AppException.unauthorized('Invalid credentials.');
 
-  const { accessToken, rawRefreshToken } = await this.issueSession(staff.id, staff.role);
+  const { accessToken, rawRefreshToken } = await this.issueSession(staff.id, staff.role, staff.email);
 
   const { passwordHash: _omit, ...safeStaff } = staff;
   return { accessToken, rawRefreshToken, staff: safeStaff };
@@ -49,7 +49,7 @@ export class AuthService {
     });
 
     const staff = await this.prisma.staffAccount.findUniqueOrThrow({ where: { id: existing.staffId } });
-    return this.issueSession(staff.id, staff.role);
+    return this.issueSession(staff.id, staff.role, staff.email);
   }
 
   async logout(rawRefreshToken: string | undefined) {
@@ -175,8 +175,8 @@ export class AuthService {
     await tx.refreshToken.updateMany({ where: { staffId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
-  private async issueSession(staffId: string, role: JwtPayload['role']) {
-    const accessToken = this.jwtService.sign({ sub: staffId, role });
+  private async issueSession(staffId: string, role: JwtPayload['role'], identifier: string) {
+    const accessToken = this.jwtService.sign({ sub: staffId, role, identifier } satisfies JwtPayload);
 
     const rawRefreshToken = generateOpaqueToken();
     const refreshExpiresInMs = this.configService.getOrThrow<number>('jwt.refreshExpiresInMs');
