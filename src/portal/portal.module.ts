@@ -3,8 +3,10 @@ import { AuthModule } from '../auth/auth.module.js';
 import { EmailModule } from '../email/email.module.js';
 import { PortalAuthController } from './controllers/portal-auth.controller.js';
 import { PortalCoursesController } from './controllers/portal-courses.controller.js';
+import { PortalExamsController } from './controllers/portal-exams.controller.js';
 import { PortalAuthService } from './services/portal-auth.service.js';
 import { PortalCoursesService } from './services/portal-courses.service.js';
+import { PortalExamsService } from './services/portal-exams.service.js';
 
 /**
  * PortalModule owns all student-facing portal features.
@@ -27,9 +29,9 @@ import { PortalCoursesService } from './services/portal-courses.service.js';
     AuthModule,   // re-exports JwtModule → JwtService available in this module
     EmailModule,  // EmailService → future inquiry / notification features
   ],
-  controllers: [PortalAuthController, PortalCoursesController],
-  providers: [PortalAuthService, PortalCoursesService],
-  exports: [PortalAuthService, PortalCoursesService],
+  controllers: [PortalAuthController, PortalCoursesController, PortalExamsController],
+  providers: [PortalAuthService, PortalCoursesService, PortalExamsService],
+  exports: [PortalAuthService, PortalCoursesService, PortalExamsService],
 })
 export class PortalModule {}
 
