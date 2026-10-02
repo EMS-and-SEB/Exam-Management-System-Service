@@ -80,7 +80,7 @@ model StudentDirectory {
   cohortMembers CohortMember[]
   examRosters   ExamRoster[]
   examSessions  ExamSession[]
-  refreshTokens StudentRefreshToken[]
+  refreshTokens RefreshToken[]
 }
 
 model StaffAccount {
@@ -132,25 +132,19 @@ model StaffInvitation {
 
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
-  staffId   String    @db.Uuid
+  staffId   String?   @db.Uuid
+  studentId String?   @db.Uuid
   tokenHash String
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
 
-  staff StaffAccount @relation(fields: [staffId], references: [id])
+  staff   StaffAccount?     @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  student StudentDirectory? @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
 }
 
-model StudentRefreshToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  studentId String    @db.Uuid
-  tokenHash String
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
-
-  student StudentDirectory @relation(fields: [studentId], references: [id], onDelete: Cascade)
-}
 
 model Course {
   id           String       @id @default(uuid()) @db.Uuid

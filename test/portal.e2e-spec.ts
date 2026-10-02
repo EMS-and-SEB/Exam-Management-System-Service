@@ -9,6 +9,10 @@
  * but replace database and email I/O with lightweight in-memory fakes so
  * the suite runs without a live PostgreSQL instance or SMTP server.
  *
+ * Auth architecture (post-unification):
+ *   Students authenticate via POST /api/v1/auth/login (same endpoint as staff).
+ *   Cookie name: refresh_token   Path: /api/v1/auth
+ *
  * Coverage
  *   1. Student login – valid credentials  → 200 + JWT + httpOnly cookie
  *   2. Student login – wrong password     → 401
@@ -32,26 +36,40 @@ import { AuditService } from '../src/audit/audit.service.js';
 
 // ─── Shared Test Fixtures ────────────────────────────────────────────────────
 
-const STUDENT_ID = 'UGR/0001/20';
+const STUDENT_ID   = 'UGR/0001/20';
 const STUDENT_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-const EXAM_UUID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-const COURSE_UUID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+const EXAM_UUID    = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+const COURSE_UUID  = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const SESSION_UUID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
-const STAFF_UUID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+const STAFF_UUID   = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 
-const PASSWORD = 'TestPass123';
+const PASSWORD      = 'TestPass123';
 const PASSWORD_HASH = bcrypt.hashSync(PASSWORD, 10);
 
-/** Minimal PrismaService mock — each test overrides specific methods as needed. */
+const STUDENT_FIXTURE = {
+  id:           STUDENT_UUID,
+  studentId:    STUDENT_ID,
+  name:         'Jane Doe',
+  email:        'jane@uni.edu',
+  passwordHash: PASSWORD_HASH,
+  isActive:     true,
+};
+
+/** Minimal PrismaService mock. Each test overrides specific methods as needed. */
 function buildPrismaMock() {
   return {
+    staffAccount: {
+      // login() tries staff first; return null so it falls through to student lookup
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     studentDirectory: {
+      findFirst:  vi.fn(),
       findUnique: vi.fn(),
     },
-    studentRefreshToken: {
-      create: vi.fn().mockResolvedValue({}),
-      findFirst: vi.fn(),
-      update: vi.fn().mockResolvedValue({}),
+    refreshToken: {
+      create:     vi.fn().mockResolvedValue({}),
+      findFirst:  vi.fn(),
+      update:     vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({}),
     },
     enrollment: {
@@ -75,9 +93,9 @@ function buildPrismaMock() {
 
 /** Minimal EmailService mock. */
 const emailMock = {
-  sendExamInquiry: vi.fn().mockResolvedValue(undefined),
+  sendExamInquiry:      vi.fn().mockResolvedValue(undefined),
   sendPasswordResetOtp: vi.fn().mockResolvedValue(undefined),
-  sendStaffInvitation: vi.fn().mockResolvedValue(undefined),
+  sendStaffInvitation:  vi.fn().mockResolvedValue(undefined),
 };
 
 /** Minimal AuditService mock. */
@@ -119,74 +137,58 @@ describe('Student Portal (e2e)', () => {
   });
 
   // ── Test 1: Valid Login ────────────────────────────────────────────────────
-  describe('POST /api/v1/portal/auth/login', () => {
-    it('returns 200 with JWT and sets portal_refresh_token cookie on valid credentials', async () => {
+  describe('POST /api/v1/auth/login — student valid credentials', () => {
+    it('returns 200 with JWT and sets refresh_token cookie scoped to /api/v1/auth', async () => {
       await bootstrap();
 
-      prismaMock.studentDirectory.findUnique.mockResolvedValue({
-        id: STUDENT_UUID,
-        studentId: STUDENT_ID,
-        name: 'Jane Doe',
-        email: 'jane@uni.edu',
-        passwordHash: PASSWORD_HASH,
-        isActive: true,
-      });
+      // Staff lookup returns null → service falls through to student
+      prismaMock.staffAccount.findUnique.mockResolvedValue(null);
+      // Student found by studentId OR email (findFirst)
+      prismaMock.studentDirectory.findFirst.mockResolvedValue(STUDENT_FIXTURE);
 
       const res = await request(app.getHttpServer())
-        .post('/api/v1/portal/auth/login')
-        .send({ studentId: STUDENT_ID, password: PASSWORD })
+        .post('/api/v1/auth/login')
+        .send({ identifier: STUDENT_ID, password: PASSWORD })
         .expect(200);
 
       expect(res.body.jwt).toBeDefined();
       expect(typeof res.body.jwt).toBe('string');
-      expect(res.body.student.studentId).toBe(STUDENT_ID);
-      expect(res.body.student.passwordHash).toBeUndefined();
+      expect(res.body.user.studentId).toBe(STUDENT_ID);
+      expect(res.body.user.passwordHash).toBeUndefined();
 
       const cookies: string[] = res.headers['set-cookie'] ?? [];
       const refreshCookie = (Array.isArray(cookies) ? cookies : [cookies]).find((c: string) =>
-        c.startsWith('portal_refresh_token='),
+        c.startsWith('refresh_token='),
       );
       expect(refreshCookie).toBeDefined();
       expect(refreshCookie).toContain('HttpOnly');
-      expect(refreshCookie).toContain('Path=/api/v1/portal/auth');
+      expect(refreshCookie).toContain('Path=/api/v1/auth');
     });
   });
 
   // ── Test 2: Wrong Password → 401 ──────────────────────────────────────────
-  describe('POST /api/v1/portal/auth/login — invalid password', () => {
+  describe('POST /api/v1/auth/login — invalid password', () => {
     it('returns 401 when the password does not match', async () => {
       await bootstrap();
 
-      prismaMock.studentDirectory.findUnique.mockResolvedValue({
-        id: STUDENT_UUID,
-        studentId: STUDENT_ID,
-        name: 'Jane Doe',
-        email: null,
-        passwordHash: PASSWORD_HASH,
-        isActive: true,
-      });
+      prismaMock.staffAccount.findUnique.mockResolvedValue(null);
+      prismaMock.studentDirectory.findFirst.mockResolvedValue(STUDENT_FIXTURE);
 
       await request(app.getHttpServer())
-        .post('/api/v1/portal/auth/login')
-        .send({ studentId: STUDENT_ID, password: 'WrongPassword!' })
+        .post('/api/v1/auth/login')
+        .send({ identifier: STUDENT_ID, password: 'WrongPassword!' })
         .expect(401);
     });
   });
 
   // ── Helper: Obtain a valid student JWT ────────────────────────────────────
   async function loginAndGetJwt(): Promise<string> {
-    prismaMock.studentDirectory.findUnique.mockResolvedValue({
-      id: STUDENT_UUID,
-      studentId: STUDENT_ID,
-      name: 'Jane Doe',
-      email: 'jane@uni.edu',
-      passwordHash: PASSWORD_HASH,
-      isActive: true,
-    });
+    prismaMock.staffAccount.findUnique.mockResolvedValue(null);
+    prismaMock.studentDirectory.findFirst.mockResolvedValue(STUDENT_FIXTURE);
 
     const res = await request(app.getHttpServer())
-      .post('/api/v1/portal/auth/login')
-      .send({ studentId: STUDENT_ID, password: PASSWORD })
+      .post('/api/v1/auth/login')
+      .send({ identifier: STUDENT_ID, password: PASSWORD })
       .expect(200);
 
     return res.body.jwt as string;
@@ -320,7 +322,7 @@ describe('Student Portal (e2e)', () => {
             cohort: null,
           },
           answers: [
-            { pointsAwarded: 5, gradedAt: new Date(), examQuestion: { type: 'MULTIPLE_CHOICE' } },
+            { pointsAwarded: 5,  gradedAt: new Date(), examQuestion: { type: 'MULTIPLE_CHOICE' } },
             { pointsAwarded: 16, gradedAt: new Date(), examQuestion: { type: 'WORKOUT' } }, // ← graded
           ],
         },
@@ -344,7 +346,7 @@ describe('Student Portal (e2e)', () => {
       await bootstrap();
       const jwt = await loginAndGetJwt();
 
-      // POST /api/v1/staff is restricted to EXAM_ADMIN
+      // GET /api/v1/staff is restricted to EXAM_ADMIN
       await request(app.getHttpServer())
         .get('/api/v1/staff')
         .set('Authorization', `Bearer ${jwt}`)
