@@ -14,7 +14,13 @@ import {
   StaffInvitationCompleteDto,
 } from './validation/auth.dto.js';
 
+/**
+ * Single cookie name for the unified auth flow.
+ * Cookie path is /api/v1/auth so the browser sends it back on all auth routes
+ * (login, refresh, logout, me) for both staff and students.
+ */
 const REFRESH_COOKIE = 'refresh_token';
+const COOKIE_PATH    = '/api/v1/auth';
 
 @Controller('auth')
 export class AuthController {
@@ -23,18 +29,33 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
+  // ── Unified primary endpoints ────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/auth/login
+   * Accepts { identifier, password } where identifier is either a staff email
+   * or a student's studentId / email.
+   * Also accepts the legacy { email, password } shape (preprocessed by LoginDto).
+   */
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post('staff/login')
+  @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const { accessToken, rawRefreshToken, staff } = await this.authService.login(dto.email, dto.password);
+    const { accessToken, rawRefreshToken, user } = await this.authService.login(
+      (dto as unknown as { identifier: string }).identifier,
+      dto.password,
+    );
     this.setRefreshCookie(res, rawRefreshToken);
-    return { jwt: accessToken, staff };
+    return { jwt: accessToken, user };
   }
 
+  /**
+   * POST /api/v1/auth/refresh
+   * Rotates the refresh token cookie and returns a new JWT.
+   */
   @Public()
-  @Post('staff/refresh')
+  @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { accessToken, rawRefreshToken } = await this.authService.refresh(req.cookies?.[REFRESH_COOKIE]);
@@ -42,19 +63,58 @@ export class AuthController {
     return { jwt: accessToken };
   }
 
+  /**
+   * POST /api/v1/auth/logout
+   * Revokes the current token and clears the cookie.
+   */
   @Public()
-  @Post('staff/logout')
- @HttpCode(HttpStatus.OK)
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     await this.authService.logout(req.cookies?.[REFRESH_COOKIE]);
-    res.clearCookie(REFRESH_COOKIE);
+    res.clearCookie(REFRESH_COOKIE, { path: COOKIE_PATH });
     return { success: true };
   }
 
+  /**
+   * GET /api/v1/auth/me
+   * Returns the authenticated user's safe profile (staff or student).
+   */
   @Get('me')
   me(@CurrentUser() user: JwtPayload) {
-    return this.authService.me(user.sub);
+    return this.authService.me(user.sub, user.role);
   }
+
+  // ── Backwards-compatible staff-prefixed aliases ──────────────────────────
+  // Keeps any existing staff front-end / integration clients working without
+  // changes. All three delegate directly to the unified methods above.
+
+  /** @deprecated Use POST /api/v1/auth/login */
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('staff/login')
+  @HttpCode(HttpStatus.OK)
+  staffLogin(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
+    return this.login(dto, res);
+  }
+
+  /** @deprecated Use POST /api/v1/auth/refresh */
+  @Public()
+  @Post('staff/refresh')
+  @HttpCode(HttpStatus.OK)
+  staffRefresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.refresh(req, res);
+  }
+
+  /** @deprecated Use POST /api/v1/auth/logout */
+  @Public()
+  @Post('staff/logout')
+  @HttpCode(HttpStatus.OK)
+  staffLogout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.logout(req, res);
+  }
+
+  // ── Staff password-reset & invitation (unchanged) ────────────────────────
 
   @Public()
   @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
@@ -94,13 +154,15 @@ export class AuthController {
     return { success: true };
   }
 
-  private setRefreshCookie(res: Response, token: string) {
+  // ── Private helpers ──────────────────────────────────────────────────────
+
+  private setRefreshCookie(res: Response, token: string): void {
     res.cookie(REFRESH_COOKIE, token, {
       httpOnly: true,
       secure: this.configService.getOrThrow<string>('app.environment') === 'production',
       sameSite: 'strict',
       maxAge: this.configService.getOrThrow<number>('jwt.refreshExpiresInMs'),
-      path: '/api/v1/auth/staff',
+      path: COOKIE_PATH,
     });
   }
 }

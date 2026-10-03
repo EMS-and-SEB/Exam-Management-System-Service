@@ -11,9 +11,10 @@ import {
   StaffRole,
 } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import type { UserRole } from '../auth/validation/auth.interface.js';
 interface CallerContext {
   staffId: string;
-  role: StaffRole;
+  role: UserRole;
 }
 
 @Injectable()

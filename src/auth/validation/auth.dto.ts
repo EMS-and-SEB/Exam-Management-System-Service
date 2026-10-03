@@ -1,11 +1,23 @@
 import { z } from 'zod';
 import { createZodDto } from 'nestjs-zod';
 
-export const loginSchema = z.object({
-  email: z.email(),
-  password: z.string().min(1, 'Password is required.'),
-});
+// Accepts { identifier, password } (new unified shape) OR the legacy
+// { email, password } shape that existing staff clients send.
+// z.preprocess maps the legacy field so both forms produce { identifier, password }.
+export const loginSchema = z.preprocess(
+  (raw) => {
+    if (raw && typeof raw === 'object' && !('identifier' in raw) && 'email' in raw) {
+      return { ...raw, identifier: (raw as Record<string, unknown>).email };
+    }
+    return raw;
+  },
+  z.object({
+    identifier: z.string().min(1, 'Email or Student ID is required.'),
+    password: z.string().min(1, 'Password is required.'),
+  }),
+);
 export class LoginDto extends createZodDto(loginSchema) {}
+
 
 export const passwordResetRequestSchema = z.object({ email: z.email() });
 export class PasswordResetRequestDto extends createZodDto(passwordResetRequestSchema) {}

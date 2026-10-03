@@ -22,6 +22,8 @@ import { IncidentsModule } from './incidents/incidents.module.js';
 import { AuditModule } from './audit/audit.module.js';
 import { RetentionPolicyModule } from './retention-policy/retention.module.js';
 import { SebModule } from './seb/seb.module.js';
+import { PortalModule } from './portal/portal.module.js';
+
 
 @Module({
   imports: [
@@ -57,6 +59,8 @@ import { SebModule } from './seb/seb.module.js';
     AuditModule,
     RetentionPolicyModule,
     SebModule,
+    PortalModule,
+
   ],
 
   providers: [

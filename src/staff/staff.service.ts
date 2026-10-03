@@ -163,7 +163,7 @@ export class StaffService {
       });
 
       if (isDeactivation || isReactivation || isEmailChange) {
-        await this.authService.revokeAllSessions(id, tx);
+        await this.authService.revokeAllStaffSessions(id, tx);
       }
       if (isDeactivation) {
         await this.auditService.log(
