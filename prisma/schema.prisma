@@ -68,15 +68,19 @@ enum IncidentResolution {
 }
 
 model StudentDirectory {
-  id        String   @id @default(uuid()) @db.Uuid
-  studentId String   @unique
-  name      String
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid()) @db.Uuid
+  studentId    String   @unique
+  name         String
+  email        String?
+  passwordHash String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
 
   enrollments   Enrollment[]
   cohortMembers CohortMember[]
   examRosters   ExamRoster[]
   examSessions  ExamSession[]
+  refreshTokens RefreshToken[]
 }
 
 model StaffAccount {
@@ -128,13 +132,17 @@ model StaffInvitation {
 
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
-  staffId   String    @db.Uuid
+  staffId   String?   @db.Uuid
+  studentId String?   @db.Uuid
   tokenHash String
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
 
-  staff StaffAccount @relation(fields: [staffId], references: [id])
+  staff   StaffAccount?     @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  student StudentDirectory? @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
 }
 
 model Course {
