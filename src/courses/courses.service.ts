@@ -8,9 +8,10 @@ import { StaffRole, CourseStatus, SessionStatus } from '../generated/prisma/clie
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
 
+import type { UserRole } from '../auth/validation/auth.interface.js';
 interface CallerContext {
   staffId: string;
-  role: StaffRole;
+  role: UserRole;
 }
 
 @Injectable()

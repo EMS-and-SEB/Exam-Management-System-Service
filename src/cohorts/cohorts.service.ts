@@ -8,9 +8,10 @@ import { StudentsService } from '../students/students.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
 
+import type { UserRole } from '../auth/validation/auth.interface.js';
 interface CallerContext {
   staffId: string;
-  role: StaffRole;
+  role: UserRole;
 }
 
 @Injectable()

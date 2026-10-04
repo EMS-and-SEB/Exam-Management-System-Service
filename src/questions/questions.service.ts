@@ -9,9 +9,10 @@ interface ParentRef {
   cohortId?: string;
 }
 
+import type { UserRole } from '../auth/validation/auth.interface.js';
 interface CallerContext {
   staffId: string;
-  role: StaffRole;
+  role: UserRole;
 }
 
 @Injectable()
