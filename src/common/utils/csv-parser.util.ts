@@ -3,6 +3,8 @@ import { parse } from 'csv-parse/sync';
 export interface CsvRosterRow {
   studentId: string;
   name: string;
+  email?: string;
+  password?: string;
 }
 
 export interface CsvParseResult {
@@ -22,7 +24,7 @@ export function parseRosterCsv(buffer: Buffer): CsvParseResult {
   const errors: CsvParseResult['errors'] = [];
 
   records.forEach((record, index) => {
-    const rowNumber = index + 2; // header row + 1-based index
+    const rowNumber = index + 2;
     const studentId = record.studentId?.trim();
     const name = record.name?.trim();
 
@@ -30,7 +32,11 @@ export function parseRosterCsv(buffer: Buffer): CsvParseResult {
       errors.push({ row: rowNumber, reason: 'Missing studentId or name.' });
       return;
     }
-    rows.push({ studentId, name });
+
+    const email = record.email?.trim() || undefined;
+    const password = record.password?.trim() || undefined;
+
+    rows.push({ studentId, name, email, password });
   });
 
   return { rows, errors };

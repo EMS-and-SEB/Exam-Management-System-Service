@@ -15,6 +15,7 @@ import {
 } from './validation/auth.dto.js';
 
 const REFRESH_COOKIE = 'refresh_token';
+const COOKIE_PATH = '/api/v1/auth';
 
 @Controller('auth')
 export class AuthController {
@@ -25,16 +26,19 @@ export class AuthController {
 
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post('staff/login')
+  @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const { accessToken, rawRefreshToken, staff } = await this.authService.login(dto.email, dto.password);
+    const { accessToken, rawRefreshToken, user, staff, student } = await this.authService.login(
+      dto.identifier,
+      dto.password,
+    );
     this.setRefreshCookie(res, rawRefreshToken);
-    return { jwt: accessToken, staff };
+    return { jwt: accessToken, user, staff, student };
   }
 
   @Public()
-  @Post('staff/refresh')
+  @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { accessToken, rawRefreshToken } = await this.authService.refresh(req.cookies?.[REFRESH_COOKIE]);
@@ -43,17 +47,39 @@ export class AuthController {
   }
 
   @Public()
-  @Post('staff/logout')
- @HttpCode(HttpStatus.OK)
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     await this.authService.logout(req.cookies?.[REFRESH_COOKIE]);
-    res.clearCookie(REFRESH_COOKIE);
+    res.clearCookie(REFRESH_COOKIE, { path: COOKIE_PATH });
     return { success: true };
   }
 
   @Get('me')
   me(@CurrentUser() user: JwtPayload) {
-    return this.authService.me(user.sub);
+    return this.authService.me(user.sub, user.role);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('staff/login')
+  @HttpCode(HttpStatus.OK)
+  staffLogin(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
+    return this.login(dto, res);
+  }
+
+  @Public()
+  @Post('staff/refresh')
+  @HttpCode(HttpStatus.OK)
+  staffRefresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.refresh(req, res);
+  }
+
+  @Public()
+  @Post('staff/logout')
+  @HttpCode(HttpStatus.OK)
+  staffLogout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.logout(req, res);
   }
 
   @Public()
@@ -100,7 +126,7 @@ export class AuthController {
       secure: this.configService.getOrThrow<string>('app.environment') === 'production',
       sameSite: 'strict',
       maxAge: this.configService.getOrThrow<number>('jwt.refreshExpiresInMs'),
-      path: '/api/v1/auth/staff',
+      path: COOKIE_PATH,
     });
   }
 }
