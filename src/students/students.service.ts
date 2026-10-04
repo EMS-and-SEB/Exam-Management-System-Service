@@ -3,6 +3,7 @@ import { parseRosterCsv } from '../common/utils/csv-parser.util.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { StudentDirectory } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { bcryptHash } from '../auth/utils/hash.util.js';
 import type { CreateStudentDto } from './dto/create-student.dto.js';
 import type { StudentQueryDto } from './dto/student-query.dto.js';
 import type { UpdateStudentDto } from './dto/update-student.dto.js';
@@ -10,6 +11,11 @@ import type { UpdateStudentDto } from './dto/update-student.dto.js';
 @Injectable()
 export class StudentsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private sanitize<T extends { passwordHash?: string | null }>(student: T): Omit<T, 'passwordHash'> {
+    const { passwordHash: _omit, ...safe } = student;
+    return safe;
+  }
 
   async create(dto: CreateStudentDto) {
     const existing = await this.prisma.studentDirectory.findUnique({
@@ -19,13 +25,17 @@ export class StudentsService {
       throw AppException.conflict('A student with this ID already exists.');
     }
 
+    const passwordHash = await bcryptHash((dto as unknown as { password?: string }).password ?? dto.studentId);
+
     const student = await this.prisma.studentDirectory.create({
       data: {
         studentId: dto.studentId,
         name: dto.name,
+        email: (dto as unknown as { email?: string }).email,
+        passwordHash,
       },
     });
-    return student;
+    return this.sanitize(student);
   }
 
   async findAll(query: StudentQueryDto) {
@@ -47,6 +57,14 @@ export class StudentsService {
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
+        select: {
+          id: true,
+          studentId: true,
+          name: true,
+          email: true,
+          isActive: true,
+          createdAt: true,
+        },
       }),
       this.prisma.studentDirectory.count({ where }),
     ]);
@@ -63,6 +81,14 @@ export class StudentsService {
   async findOne(id: string) {
     const student = await this.prisma.studentDirectory.findUnique({
       where: { id },
+      select: {
+        id: true,
+        studentId: true,
+        name: true,
+        email: true,
+        isActive: true,
+        createdAt: true,
+      },
     });
     if (!student) {
       throw AppException.notFound('Student not found.');
@@ -78,22 +104,36 @@ export class StudentsService {
       throw AppException.notFound('Student not found.');
     }
 
-    if (dto.studentId && dto.studentId !== existing.studentId) {
+    const typedDto = dto as unknown as {
+      studentId?: string;
+      name?: string;
+      email?: string;
+      password?: string;
+      isActive?: boolean;
+    };
+
+    if (typedDto.studentId && typedDto.studentId !== existing.studentId) {
       const conflict = await this.prisma.studentDirectory.findUnique({
-        where: { studentId: dto.studentId },
+        where: { studentId: typedDto.studentId },
       });
       if (conflict) {
         throw AppException.conflict('A student with this ID already exists.');
       }
     }
 
-    return this.prisma.studentDirectory.update({
+    const passwordHash = typedDto.password ? await bcryptHash(typedDto.password) : undefined;
+
+    const updated = await this.prisma.studentDirectory.update({
       where: { id },
       data: {
-        studentId: dto.studentId,
-        name: dto.name,
+        studentId: typedDto.studentId,
+        name: typedDto.name,
+        email: typedDto.email,
+        isActive: typedDto.isActive,
+        ...(passwordHash !== undefined && { passwordHash }),
       },
     });
+    return this.sanitize(updated);
   }
 
   async importStudents(fileBuffer: Buffer) {
@@ -110,10 +150,19 @@ export class StudentsService {
       return current && current.name !== r.name;
     });
 
+    const newRowsWithHashes = await Promise.all(
+      newRows.map(async (r) => ({
+        studentId: r.studentId,
+        name: r.name,
+        email: r.email,
+        passwordHash: await bcryptHash(r.password ?? r.studentId),
+      })),
+    );
+
     await this.prisma.$transaction([
-      ...(newRows.length > 0
+      ...(newRowsWithHashes.length > 0
         ? [this.prisma.studentDirectory.createMany({
-            data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
+            data: newRowsWithHashes,
             skipDuplicates: true,
           })]
         : []),
@@ -144,8 +193,9 @@ export class StudentsService {
       });
       if (maybeNow) return maybeNow;
 
+      const passwordHash = await bcryptHash(studentId);
       return tx.studentDirectory.create({
-        data: { studentId, name },
+        data: { studentId, name, passwordHash },
       });
     });
   }
