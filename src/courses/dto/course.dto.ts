@@ -4,6 +4,7 @@ import { createZodDto } from 'nestjs-zod';
 export const createCourseSchema = z.object({
   name: z.string().min(1),
   instructorId: z.uuid(),
+  orgUnitId: z.uuid().optional(),
 });
 export class CreateCourseDto extends createZodDto(createCourseSchema) {}
 

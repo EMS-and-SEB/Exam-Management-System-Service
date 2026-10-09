@@ -8,7 +8,8 @@ datasource db {
 }
 
 enum StaffRole {
-  EXAM_ADMIN
+  SUPER_ADMIN
+  UNIT_ADMIN
   INSTRUCTOR
   INVIGILATOR
   EXIT_EXAM_COORDINATOR
@@ -85,9 +86,11 @@ model StaffAccount {
   email        String    @unique
   passwordHash String
   role         StaffRole
+  orgUnitId       String   @db.Uuid
   isActive     Boolean   @default(true)
   createdAt    DateTime  @default(now())
 
+  orgUnit           OrgUnit  @relation(fields: [orgUnitId], references: [id])
   passwordResets    StaffPasswordReset[]
   invitations       StaffInvitation[]
   refreshTokens     RefreshToken[]
@@ -137,14 +140,39 @@ model RefreshToken {
   staff StaffAccount @relation(fields: [staffId], references: [id])
 }
 
+model OrgUnit {
+  id        String   @id @default(uuid()) @db.Uuid
+  parentId  String?  @db.Uuid
+  name      String
+  createdAt DateTime @default(now())
+
+  parent   OrgUnit?  @relation("OrgUnitChildren", fields: [parentId], references: [id])
+  children OrgUnit[] @relation("OrgUnitChildren")
+
+  staff   StaffAccount[]
+  courses Course[]
+  cohorts Cohort[]
+}
+
+model OrgUnitClosure {
+  ancestorId   String @db.Uuid
+  descendantId String @db.Uuid
+  depth        Int
+
+  @@id([ancestorId, descendantId])
+  @@index([descendantId])
+}
+
 model Course {
   id           String       @id @default(uuid()) @db.Uuid
   name         String
   instructorId String?      @db.Uuid
+  orgUnitId String  @db.Uuid
   status       CourseStatus @default(ACTIVE)
   createdAt    DateTime     @default(now())
 
   instructor  StaffAccount? @relation(fields: [instructorId], references: [id], onDelete: SetNull)
+  orgUnit   OrgUnit @relation(fields: [orgUnitId], references: [id])
   enrollments Enrollment[]
   questions   Question[]
   exams       Exam[]
@@ -183,10 +211,12 @@ model Cohort {
   id            String       @id @default(uuid()) @db.Uuid
   name          String
   coordinatorId String?      @db.Uuid
+  orgUnitId String  @db.Uuid
   status        CohortStatus @default(ACTIVE)
   createdAt     DateTime     @default(now())
 
   coordinator   StaffAccount?  @relation(fields: [coordinatorId], references: [id], onDelete: SetNull)
+  orgUnit   OrgUnit @relation(fields: [orgUnitId], references: [id])
   cohortMembers CohortMember[]
   questions     Question[]
   exams         Exam[]
@@ -276,7 +306,8 @@ model ExamInvigilator {
   exam        Exam         @relation(fields: [examId], references: [id])
   invigilator StaffAccount @relation(fields: [invigilatorId], references: [id])
 
-  @@unique([examId, invigilatorId])
+  @@unique([examId])
+  @@index([invigilatorId])
 }
 
 model ExamSession {

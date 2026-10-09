@@ -9,7 +9,7 @@ import type { JwtPayload } from './validation/auth.interface.js';
 import { EmailService } from '../email/email.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
-import { Prisma } from '../generated/prisma/client.js';
+import { Prisma, StaffAccount } from '../generated/prisma/client.js';
 
 @Injectable()
 export class AuthService {
@@ -22,17 +22,23 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string) {
-  const staff = await this.prisma.staffAccount.findUnique({ where: { email } });
-  if (!staff || !staff.isActive) throw AppException.unauthorized('Invalid credentials.');
+    const staff = await this.prisma.staffAccount.findUnique({
+      where: { email },
+      include: { orgUnit: { select: { id: true, name: true } } },
+    });
+    if (!staff) throw AppException.unauthorized('Invalid credentials.');
+    if (!staff.isActive) {
+      throw AppException.unauthorized('Your account is inactive. Please contact your administrator.');
+    }
 
-  const matches = await bcryptCompare(password, staff.passwordHash);
-  if (!matches) throw AppException.unauthorized('Invalid credentials.');
+    const matches = await bcryptCompare(password, staff.passwordHash);
+    if (!matches) throw AppException.unauthorized('Invalid credentials.');
 
-  const { accessToken, rawRefreshToken } = await this.issueSession(staff.id, staff.role);
+    const { accessToken, rawRefreshToken } = await this.issueSession(staff);
 
-  const { passwordHash: _omit, ...safeStaff } = staff;
-  return { accessToken, rawRefreshToken, staff: safeStaff };
-}
+    const { passwordHash: _omit, ...safeStaff } = staff;
+    return { accessToken, rawRefreshToken, staff: safeStaff };
+  }
 
   async refresh(rawRefreshToken: string | undefined) {
     if (!rawRefreshToken) throw AppException.unauthorized();
@@ -49,7 +55,7 @@ export class AuthService {
     });
 
     const staff = await this.prisma.staffAccount.findUniqueOrThrow({ where: { id: existing.staffId } });
-    return this.issueSession(staff.id, staff.role);
+    return this.issueSession(staff);
   }
 
   async logout(rawRefreshToken: string | undefined) {
@@ -63,29 +69,33 @@ export class AuthService {
   async me(staffId: string) {
     const { passwordHash: _omit, ...safe } = await this.prisma.staffAccount.findUniqueOrThrow({
       where: { id: staffId },
+      include: { orgUnit: { select: { id: true, name: true } } },
     });
     return safe;
   }
 
-    async requestPasswordReset(email: string) {
+  async requestPasswordReset(email: string) {
     const staff = await this.prisma.staffAccount.findUnique({ where: { email } });
     if (!staff) return;
+    if (!staff.isActive) {
+      throw AppException.badRequest('Your account is inactive. Please contact your administrator.');
+    }
 
     await this.prisma.staffPasswordReset.updateMany({
-        where: { staffId: staff.id, consumedAt: null },
-        data: { consumedAt: new Date() },
+      where: { staffId: staff.id, consumedAt: null },
+      data: { consumedAt: new Date() },
     });
 
     const otp = generateOtp();
     await this.prisma.staffPasswordReset.create({
-        data: {
+      data: {
         staffId: staff.id,
         codeHash: await bcryptHash(otp),
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-        },
+      },
     });
-      await this.emailService.sendPasswordResetOtp(email, otp);
-    }
+    await this.emailService.sendPasswordResetOtp(email, otp);
+  }
 
   async verifyPasswordReset(email: string, code: string) {
     const staff = await this.prisma.staffAccount.findUnique({ where: { email } });
@@ -115,6 +125,7 @@ export class AuthService {
   async confirmPasswordReset(resetToken: string, newPassword: string) {
     const reset = await this.prisma.staffPasswordReset.findFirst({
       where: { resetTokenHash: sha256Hash(resetToken), resetTokenConsumedAt: null, resetTokenExpiresAt: { gt: new Date() } },
+      include: { staff: { select: { name: true } } },
     });
     if (!reset) throw AppException.badRequest('Invalid or expired reset token.');
 
@@ -122,7 +133,13 @@ export class AuthService {
       await tx.staffAccount.update({ where: { id: reset.staffId }, data: { passwordHash: await bcryptHash(newPassword) } });
       await tx.staffPasswordReset.update({ where: { id: reset.id }, data: { resetTokenConsumedAt: new Date() } });
       await this.auditService.log(
-        { actorId: reset.staffId, action: AuditAction.STAFF_PASSWORD_RESET, entityType: 'StaffAccount', entityId: reset.staffId },
+        {
+          actorId: reset.staffId,
+          action: AuditAction.STAFF_PASSWORD_RESET,
+          entityType: 'StaffAccount',
+          entityId: reset.staffId,
+          metadata: { displayName: reset.staff.name },
+        },
         tx,
       );
     });
@@ -132,11 +149,7 @@ export class AuthService {
 
   async verifyStaffInvitation(token: string) {
     const invitation = await this.prisma.staffInvitation.findFirst({
-      where: {
-        tokenHash: sha256Hash(token),
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+      where: { tokenHash: sha256Hash(token), consumedAt: null, expiresAt: { gt: new Date() } },
       include: { staff: { select: { name: true, email: true } } },
     });
     if (!invitation) throw AppException.badRequest('This invitation is invalid or has expired.');
@@ -145,11 +158,7 @@ export class AuthService {
 
   async completeStaffInvitation(token: string, newPassword: string) {
     const invitation = await this.prisma.staffInvitation.findFirst({
-      where: {
-        tokenHash: sha256Hash(token),
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+      where: { tokenHash: sha256Hash(token), consumedAt: null, expiresAt: { gt: new Date() } },
     });
     if (!invitation) throw AppException.badRequest('This invitation is invalid or has expired.');
 
@@ -175,14 +184,19 @@ export class AuthService {
     await tx.refreshToken.updateMany({ where: { staffId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
-  private async issueSession(staffId: string, role: JwtPayload['role']) {
-    const accessToken = this.jwtService.sign({ sub: staffId, role });
+  private async issueSession(staff: Pick<StaffAccount, 'id' | 'role' | 'orgUnitId'>) {
+    const payload: JwtPayload = {
+      sub: staff.id,
+      role: staff.role,
+      orgUnitId: staff.orgUnitId,
+    };
+    const accessToken = this.jwtService.sign(payload);
 
     const rawRefreshToken = generateOpaqueToken();
     const refreshExpiresInMs = this.configService.getOrThrow<number>('jwt.refreshExpiresInMs');
     await this.prisma.refreshToken.create({
       data: {
-        staffId,
+        staffId: staff.id,
         tokenHash: sha256Hash(rawRefreshToken),
         expiresAt: new Date(Date.now() + refreshExpiresInMs),
       },

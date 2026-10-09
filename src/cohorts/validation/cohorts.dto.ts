@@ -1,7 +1,7 @@
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 
-const createCohortSchema = z.object({ name: z.string().min(1), coordinatorId: z.uuid() });
+const createCohortSchema = z.object({ name: z.string().min(1), coordinatorId: z.uuid(), orgUnitId: z.uuid().optional() });
 export class CreateCohortDto extends createZodDto(createCohortSchema) {}
 
 const updateCohortSchema = z.object({

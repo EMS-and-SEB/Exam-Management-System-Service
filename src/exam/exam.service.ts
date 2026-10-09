@@ -10,10 +10,37 @@ import {
   SessionStatus,
   StaffRole,
 } from '../generated/prisma/client.js';
+import { OrgUnitsService } from '../org-units/org-units.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+
 interface CallerContext {
   staffId: string;
   role: StaffRole;
+}
+
+interface ScopedCallerContext extends CallerContext {
+  orgUnitId: string;
+}
+
+const ASSIGNABLE_INVIGILATOR_ROLES = [
+  StaffRole.INVIGILATOR,
+  StaffRole.INSTRUCTOR,
+  StaffRole.EXIT_EXAM_COORDINATOR,
+] as const;
+
+function isAssignableInvigilatorRole(role: StaffRole) {
+  return ASSIGNABLE_INVIGILATOR_ROLES.some(
+    (assignableRole) => assignableRole === role,
+  );
+}
+
+function isInvigilatorAssignable(
+  exam: { status: ExamStatus; scheduledStart: Date | null },
+  now = new Date(),
+): boolean {
+  const isOpen =
+    exam.status === ExamStatus.DRAFT || exam.status === ExamStatus.RELEASED;
+  return isOpen && (exam.scheduledStart === null || exam.scheduledStart > now);
 }
 
 @Injectable()
@@ -21,6 +48,7 @@ export class ExamService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly orgUnitsService: OrgUnitsService,
   ) {}
 
   async create(
@@ -149,8 +177,79 @@ export class ExamService {
     }));
   }
 
-  findOne(id: string, caller: CallerContext) {
-    return this.getAccessibleExam(id, caller);
+  async findOne(id: string, caller: CallerContext) {
+    const exam = await this.getAccessibleExam(id, caller);
+    const assignment = await this.prisma.examInvigilator.findFirst({
+      where: { examId: id },
+      select: { invigilator: { select: { id: true, name: true } } },
+    });
+    return { ...exam, invigilator: assignment?.invigilator ?? null };
+  }
+
+  async listForInvigilatorAssignment(caller: ScopedCallerContext) {
+    const scopedOrgUnitIds = await this.orgUnitsService.getScopedIds(
+      caller.orgUnitId,
+    );
+
+    const exams = await this.prisma.exam.findMany({
+      where: {
+        dataPurgedAt: null,
+        status: { in: [ExamStatus.DRAFT, ExamStatus.RELEASED] },
+        OR: [
+          { course: { orgUnitId: { in: scopedOrgUnitIds } } },
+          { cohort: { orgUnitId: { in: scopedOrgUnitIds } } },
+        ],
+      },
+      orderBy: { scheduledStart: 'asc' },
+      select: {
+        id: true,
+        title: true,
+        examType: true,
+        status: true,
+        scheduledStart: true,
+        createdById: true,
+        course: { select: { name: true } },
+        cohort: { select: { name: true } },
+        examInvigilators: {
+          select: { invigilator: { select: { id: true, name: true } } },
+        },
+      },
+    });
+
+    const now = new Date();
+    return exams
+      .filter((exam) => isInvigilatorAssignable(exam, now))
+      .map(({ examInvigilators, ...exam }) => ({
+        ...exam,
+        invigilator: examInvigilators[0]?.invigilator ?? null,
+      }));
+  }
+
+  async listAssignedInvigilationExams(staffId: string) {
+    return this.prisma.exam.findMany({
+      where: {
+        dataPurgedAt: null,
+        examInvigilators: { some: { invigilatorId: staffId } },
+      },
+      orderBy: { scheduledStart: 'asc' },
+      include: {
+        course: { select: { name: true } },
+        cohort: { select: { name: true } },
+      },
+    });
+  }
+
+  async getAssignedInvigilationExam(examId: string, staffId: string) {
+    await this.assertIsAssignedInvigilator(examId, staffId);
+    const exam = await this.prisma.exam.findUnique({
+      where: { id: examId, dataPurgedAt: null },
+      include: {
+        course: { select: { name: true } },
+        cohort: { select: { name: true } },
+      },
+    });
+    if (!exam) throw AppException.notFound('Exam not found.');
+    return exam;
   }
 
   async update(
@@ -235,14 +334,41 @@ export class ExamService {
   async assignInvigilator(
     examId: string,
     invigilatorId: string,
-    caller: CallerContext,
+    caller: ScopedCallerContext,
   ) {
-    await this.assertOwnsExam(examId, caller, ExamStatus.DRAFT);
+    const exam = await this.prisma.exam.findUnique({
+      where: { id: examId },
+      select: {
+        status: true,
+        scheduledStart: true,
+        course: { select: { orgUnitId: true } },
+        cohort: { select: { orgUnitId: true } },
+      },
+    });
+    if (!exam) throw AppException.notFound('Exam not found.');
+
+    const scopedOrgUnitIds = await this.orgUnitsService.getScopedIds(
+      caller.orgUnitId,
+    );
+    const examOrgUnitId = exam.course?.orgUnitId ?? exam.cohort?.orgUnitId;
+    if (!examOrgUnitId || !scopedOrgUnitIds.includes(examOrgUnitId)) {
+      throw AppException.forbidden();
+    }
+    if (!isInvigilatorAssignable(exam)) {
+      throw AppException.conflict(
+        'The invigilator can no longer be changed for this exam.',
+      );
+    }
 
     const staff = await this.prisma.staffAccount.findUnique({
       where: { id: invigilatorId },
     });
-    if (!staff || !staff.isActive || staff.role !== StaffRole.INVIGILATOR) {
+    if (
+      !staff ||
+      !staff.isActive ||
+      !isAssignableInvigilatorRole(staff.role) ||
+      !scopedOrgUnitIds.includes(staff.orgUnitId)
+    ) {
       throw AppException.badRequest('Invalid invigilator.');
     }
 
@@ -250,8 +376,7 @@ export class ExamService {
       const previous = await tx.examInvigilator.findFirst({
         where: { examId },
       });
-      if (previous) {
-        await tx.examInvigilator.deleteMany({ where: { examId } });
+      if (previous && previous.invigilatorId !== invigilatorId) {
         await this.auditService.log(
           {
             actorId: caller.staffId,
@@ -263,47 +388,24 @@ export class ExamService {
           tx,
         );
       }
-      const assignment = await tx.examInvigilator.create({
-        data: { examId, invigilatorId },
+      const assignment = await tx.examInvigilator.upsert({
+        where: { examId },
+        update: { invigilatorId },
+        create: { examId, invigilatorId },
       });
-      await this.auditService.log(
-        {
-          actorId: caller.staffId,
-          action: AuditAction.INVIGILATOR_ASSIGNED,
-          entityType: 'StaffAccount',
-          entityId: invigilatorId,
-          metadata: { examId },
-        },
-        tx,
-      );
+      if (!previous || previous.invigilatorId !== invigilatorId) {
+        await this.auditService.log(
+          {
+            actorId: caller.staffId,
+            action: AuditAction.INVIGILATOR_ASSIGNED,
+            entityType: 'StaffAccount',
+            entityId: invigilatorId,
+            metadata: { examId },
+          },
+          tx,
+        );
+      }
       return assignment;
-    });
-  }
-
-  async removeInvigilator(
-    examId: string,
-    staffId: string,
-    caller: CallerContext,
-  ) {
-    await this.assertOwnsExam(examId, caller, ExamStatus.DRAFT);
-    const assignment = await this.prisma.examInvigilator.findFirst({
-      where: { examId, invigilatorId: staffId },
-    });
-    if (!assignment)
-      throw AppException.notFound('Invigilator assignment not found.');
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.examInvigilator.delete({ where: { id: assignment.id } });
-      await this.auditService.log(
-        {
-          actorId: caller.staffId,
-          action: AuditAction.INVIGILATOR_REMOVED,
-          entityType: 'StaffAccount',
-          entityId: staffId,
-          metadata: { examId },
-        },
-        tx,
-      );
     });
   }
 

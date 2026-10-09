@@ -47,18 +47,6 @@ export class RetentionPolicyService {
     };
   }
 
-  /**
-   * Purge student data for CLOSED exams whose retention window has elapsed.
-   * The exam stub is retained and marked with dataPurgedAt so the purge
-   * is auditable and idempotent.
-   *
-   * Deletes, per eligible exam:
-   *   Incident -> Answer -> ExamSession
-   *   ExamRoster, ExamOTP, ExamInvigilator
-   *
-   * Keeps: Exam (stub), ExamQuestion (no student data), source Questions,
-   * AuditLog entries.
-   */
   async purgeExpiredData(callerId: string) {
     const policy = await this.getOrCreate();
     const cutoff = new Date(
@@ -140,7 +128,7 @@ export class RetentionPolicyService {
     const existing = await this.prisma.retentionPolicy.findFirst();
     if (existing) return existing;
     const firstAdmin = await this.prisma.staffAccount.findFirstOrThrow({
-      where: { role: 'EXAM_ADMIN' },
+      where: { role: 'SUPER_ADMIN' },
     });
     return this.prisma.retentionPolicy.create({
       data: { updatedById: firstAdmin.id },

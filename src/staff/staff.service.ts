@@ -3,13 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { bcryptHash } from '../auth/utils/hash.util.js';
 import { generateOpaqueToken } from '../auth/utils/token.util.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
+import { isAdminRole, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
 import { StaffRole } from '../generated/prisma/client.js';
 import { AuthService } from '../auth/auth.service.js';
 import { EmailService } from '../email/email.service.js';
+import { OrgUnitsService } from '../org-units/org-units.service.js';
 import { sha256Hash } from '../auth/utils/hash.util.js';
+import type { JwtPayload } from '../auth/validation/auth.interface.js';
 import type { CreateStaffDto } from './dto/create-staff.dto.js';
 import type { StaffQueryDto } from './dto/staff-query.dto.js';
 import type { UpdateStaffDto } from './dto/update-staff.dto.js';
@@ -22,23 +25,65 @@ export class StaffService {
     private readonly authService: AuthService,
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
+    private readonly orgUnitsService: OrgUnitsService,
   ) {}
 
-  async create(dto: CreateStaffDto, callerId: string) {
-    const existing = await this.prisma.staffAccount.findUnique({
-      where: { email: dto.email },
-    });
+  async create(dto: CreateStaffDto, caller: JwtPayload) {
+    if (caller.role !== StaffRole.SUPER_ADMIN) {
+      throw AppException.forbidden();
+    }
+
+    const existing = await this.prisma.staffAccount.findUnique({ where: { email: dto.email } });
     if (existing) {
-      throw AppException.conflict(
-        'A staff account with this email already exists.',
-      );
+      throw AppException.conflict('A staff account with this email already exists.');
     }
 
     const passwordHash = await bcryptHash(generateOpaqueToken());
 
     const { staff, invitationToken } = await this.prisma.$transaction(async (tx) => {
+      let orgUnitId: string;
+
+      if (dto.newOrgUnitName) {
+        const newUnit = await this.orgUnitsService.createChild(dto.newOrgUnitName, caller.orgUnitId, tx);
+        await this.auditService.log(
+          {
+            actorId: caller.sub,
+            action: AuditAction.ORG_UNIT_CREATED,
+            entityType: 'OrgUnit',
+            entityId: newUnit.id,
+            metadata: { displayName: newUnit.name },
+          },
+          tx,
+        );
+        orgUnitId = newUnit.id;
+      } else {
+        const scopedIds = await this.orgUnitsService.getScopedIds(caller.orgUnitId);
+        if (!scopedIds.includes(dto.orgUnitId!)) {
+          throw AppException.forbidden('You can only assign staff within your own org unit or its descendants.');
+        }
+
+        if (dto.role !== StaffRole.SUPER_ADMIN) {
+          const targetOrgUnit = await tx.orgUnit.findUnique({
+            where: { id: dto.orgUnitId },
+            select: { parentId: true },
+          });
+          if (!targetOrgUnit || targetOrgUnit.parentId === null || dto.orgUnitId === caller.orgUnitId) {
+            throw AppException.forbidden('Staff must be assigned to a child unit, not the root or your own unit.');
+          }
+        }
+
+        orgUnitId = dto.orgUnitId!;
+      }
+
       const created = await tx.staffAccount.create({
-        data: { name: dto.name, email: dto.email, role: dto.role, passwordHash, isActive: true },
+        data: {
+          name: dto.name,
+          email: dto.email,
+          role: dto.role,
+          orgUnitId,
+          passwordHash,
+          isActive: true,
+        },
       });
       const invitationToken = generateOpaqueToken();
       await tx.staffInvitation.create({
@@ -49,7 +94,13 @@ export class StaffService {
         },
       });
       await this.auditService.log(
-        { actorId: callerId, action: AuditAction.STAFF_CREATED, entityType: 'StaffAccount', entityId: created.id },
+        {
+          actorId: caller.sub,
+          action: AuditAction.STAFF_CREATED,
+          entityType: 'StaffAccount',
+          entityId: created.id,
+          metadata: { displayName: created.name },
+        },
         tx,
       );
       return { staff: created, invitationToken };
@@ -62,55 +113,58 @@ export class StaffService {
     return safe;
   }
 
-  async findAll(query: StaffQueryDto, callerRole: StaffRole) {
-    const { page, limit, search } = query;
+  async findAll(query: StaffQueryDto, caller: JwtPayload) {
+    const { page, limit, search, orgUnitId, isActive } = query;
     const skip = (page - 1) * limit;
-    const role = callerRole === StaffRole.EXAM_ADMIN ? query.role : StaffRole.INVIGILATOR;
 
-    const where = search
-      ? {
-          ...(role ? { role } : {}),
-          OR: [
-            { name: { contains: search, mode: 'insensitive' as const } },
-            { email: { contains: search, mode: 'insensitive' as const } },
-          ],
-        }
-      : role ? { role } : {};
+    const scopedOrgUnitIds = await this.orgUnitsService.getScopedIds(caller.orgUnitId);
+    if (orgUnitId && caller.role !== StaffRole.SUPER_ADMIN) {
+      throw AppException.forbidden('Only super admins can filter staff by unit.');
+    }
+    if (orgUnitId && !scopedOrgUnitIds.includes(orgUnitId)) {
+      throw AppException.forbidden('You can only filter staff within your own org unit or its descendants.');
+    }
+    const role = isAdminRole(caller.role) ? query.role : StaffRole.INVIGILATOR;
+    const roleFilter = Array.isArray(role) ? { in: role } : role;
+
+    const where = {
+      orgUnitId: { in: orgUnitId ? [orgUnitId] : scopedOrgUnitIds },
+      ...(roleFilter ? { role: roleFilter } : {}),
+      ...(isActive !== undefined ? { isActive } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' as const } },
+              { email: { contains: search, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
 
     const [data, total] = await this.prisma.$transaction([
-      this.prisma.staffAccount.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
+      this.prisma.staffAccount.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit }),
       this.prisma.staffAccount.count({ where }),
     ]);
 
-    const safeData = data.map(
-      ({ passwordHash: _passwordHash, ...safe }) => safe,
-    );
+    const safeData = data.map(({ passwordHash: _passwordHash, ...safe }) => safe);
 
-    return {
-      staff: safeData,
-      page,
-      pageSize: limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    };
+    return { staff: safeData, page, pageSize: limit, total, totalPages: Math.ceil(total / limit) };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, caller: JwtPayload) {
     const staff = await this.prisma.staffAccount.findUnique({
       where: { id },
       include: {
+        orgUnit: { select: { id: true, name: true } },
         courses: { select: { id: true, name: true, status: true } },
         coordinatedCohorts: { select: { id: true, name: true, status: true } },
       },
     });
-    if (!staff) {
-      throw AppException.notFound('Staff member not found.');
-    }
+    if (!staff) throw AppException.notFound('Staff member not found.');
+
+    const scopedOrgUnitIds = await this.orgUnitsService.getScopedIds(caller.orgUnitId);
+    assertOwnsOrIsAdmin(staff.orgUnitId, null, caller.sub, caller.role, scopedOrgUnitIds);
+
     const { passwordHash: _passwordHash, ...safe } = staff;
     return safe;
   }
@@ -133,23 +187,18 @@ export class StaffService {
     return { success: true };
   }
 
-  async update(id: string, dto: UpdateStaffDto, callerId: string) {
-    const existing = await this.prisma.staffAccount.findUnique({
-      where: { id },
-    });
-    if (!existing) {
-      throw AppException.notFound('Staff member not found.');
+  async update(id: string, dto: UpdateStaffDto, caller: JwtPayload) {
+    const existing = await this.prisma.staffAccount.findUnique({ where: { id } });
+    if (!existing) throw AppException.notFound('Staff member not found.');
+
+    if (id !== caller.sub) {
+      const scopedOrgUnitIds = await this.orgUnitsService.getScopedIds(caller.orgUnitId);
+      assertOwnsOrIsAdmin(existing.orgUnitId, null, caller.sub, caller.role, scopedOrgUnitIds);
     }
 
     if (dto.email && dto.email !== existing.email) {
-      const conflict = await this.prisma.staffAccount.findUnique({
-        where: { email: dto.email },
-      });
-      if (conflict) {
-        throw AppException.conflict(
-          'A staff account with this email already exists.',
-        );
-      }
+      const conflict = await this.prisma.staffAccount.findUnique({ where: { email: dto.email } });
+      if (conflict) throw AppException.conflict('A staff account with this email already exists.');
     }
 
     const isDeactivation = dto.isActive === false;
@@ -159,7 +208,11 @@ export class StaffService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.staffAccount.update({
         where: { id },
-        data: { name: dto.name, email: dto.email, isActive: dto.isActive },
+        data: {
+          name: dto.name,
+          email: dto.email,
+          isActive: dto.isActive,
+        },
       });
 
       if (isDeactivation || isReactivation || isEmailChange) {
@@ -167,13 +220,25 @@ export class StaffService {
       }
       if (isDeactivation) {
         await this.auditService.log(
-          { actorId: callerId, action: AuditAction.STAFF_DEACTIVATED, entityType: 'StaffAccount', entityId: id },
+          {
+            actorId: caller.sub,
+            action: AuditAction.STAFF_DEACTIVATED,
+            entityType: 'StaffAccount',
+            entityId: id,
+            metadata: { displayName: existing.name },
+          },
           tx,
         );
       }
       if (isReactivation) {
         await this.auditService.log(
-          { actorId: callerId, action: AuditAction.STAFF_REACTIVATED, entityType: 'StaffAccount', entityId: id },
+          {
+            actorId: caller.sub,
+            action: AuditAction.STAFF_REACTIVATED,
+            entityType: 'StaffAccount',
+            entityId: id,
+            metadata: { displayName: existing.name },
+          },
           tx,
         );
       }

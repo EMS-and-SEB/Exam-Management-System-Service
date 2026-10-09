@@ -6,7 +6,7 @@ import { RetentionPolicyService } from './retention.service.js';
 import { UpdateRetentionPolicyDto } from './validation/retention-policy.dto.js';
 
 @Controller('retention-policy')
-@Roles(StaffRole.EXAM_ADMIN)
+@Roles(StaffRole.SUPER_ADMIN)
 export class RetentionPolicyController {
   constructor(
     private readonly retentionPolicyService: RetentionPolicyService,

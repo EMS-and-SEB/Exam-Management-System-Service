@@ -11,26 +11,27 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { Roles } from '../auth/decorators/auth.decorator.js';
+import { CurrentUser, Roles } from '../auth/decorators/auth.decorator.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { StaffRole } from '../generated/prisma/client.js';
 import { CreateStudentDto } from './dto/create-student.dto.js';
 import { StudentQueryDto } from './dto/student-query.dto.js';
 import { UpdateStudentDto } from './dto/update-student.dto.js';
 import { StudentsService } from './students.service.js';
+import type { JwtPayload } from '../auth/validation/auth.interface.js';
 
 @Controller('students')
 export class StudentsController {
   constructor(private readonly studentsService: StudentsService) {}
 
   @Post()
-  @Roles(StaffRole.EXAM_ADMIN)
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
   async create(@Body() dto: CreateStudentDto) {
     return this.studentsService.create(dto);
   }
 
   @Post('import')
-  @Roles(StaffRole.EXAM_ADMIN)
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
   async importStudents(@UploadedFile() file: Express.Multer.File | undefined) {
     if (!file) throw AppException.badRequest('No file uploaded.');
@@ -42,7 +43,8 @@ export class StudentsController {
 
   @Get()
   @Roles(
-    StaffRole.EXAM_ADMIN,
+    StaffRole.SUPER_ADMIN,
+    StaffRole.UNIT_ADMIN,
     StaffRole.INSTRUCTOR,
     StaffRole.EXIT_EXAM_COORDINATOR,
   )
@@ -52,7 +54,8 @@ export class StudentsController {
 
   @Get(':id')
   @Roles(
-    StaffRole.EXAM_ADMIN,
+    StaffRole.SUPER_ADMIN,
+    StaffRole.UNIT_ADMIN,
     StaffRole.INSTRUCTOR,
     StaffRole.EXIT_EXAM_COORDINATOR,
   )
@@ -61,8 +64,14 @@ export class StudentsController {
   }
 
   @Patch(':id')
-  @Roles(StaffRole.EXAM_ADMIN)
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStudentDto) {
     return this.studentsService.update(id, dto);
+  }
+
+  @Get(':id/enrollments')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
+  findEnrollments(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
+    return this.studentsService.findEnrollments(id, user);
   }
 }

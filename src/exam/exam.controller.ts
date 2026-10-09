@@ -24,6 +24,12 @@ export class ExamController {
     return this.examService.findAll({ staffId: user.sub, role: user.role }, { courseId, cohortId });
   }
 
+  @Roles(StaffRole.UNIT_ADMIN)
+  @Get('invigilator-assignments')
+  listForInvigilatorAssignment(@CurrentUser() user: JwtPayload) {
+    return this.examService.listForInvigilatorAssignment({ staffId: user.sub, role: user.role, orgUnitId: user.orgUnitId });
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
     return this.examService.findOne(id, { staffId: user.sub, role: user.role });
@@ -61,17 +67,10 @@ export class ExamController {
     return { success: true };
   }
 
-  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
+  @Roles(StaffRole.UNIT_ADMIN)
   @Post(':id/invigilators')
   assignInvigilator(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignInvigilatorDto, @CurrentUser() user: JwtPayload) {
-    return this.examService.assignInvigilator(id, dto.invigilatorId, { staffId: user.sub, role: user.role });
-  }
-
-  @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
-  @Delete(':id/invigilators/:staffId')
-  async removeInvigilator(@Param('id', ParseUUIDPipe) id: string, @Param('staffId', ParseUUIDPipe) staffId: string, @CurrentUser() user: JwtPayload) {
-    await this.examService.removeInvigilator(id, staffId, { staffId: user.sub, role: user.role });
-    return { success: true };
+    return this.examService.assignInvigilator(id, dto.invigilatorId, { staffId: user.sub, role: user.role, orgUnitId: user.orgUnitId });
   }
 
   @Roles(StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR)
@@ -86,13 +85,4 @@ export class ExamController {
     return this.examService.close(id, { staffId: user.sub, role: user.role });
   }
 
-  @Get(':id/otp')
-  getOtp(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
-    return this.examService.getOtp(id, user.sub);
-  }
-
-  @Get(':id/roster')
-  getRoster(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
-    return this.examService.getRoster(id, user.sub);
-  }
 }
