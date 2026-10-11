@@ -23,6 +23,7 @@ import { AuditModule } from './audit/audit.module.js';
 import { RetentionPolicyModule } from './retention-policy/retention.module.js';
 import { SebModule } from './seb/seb.module.js';
 import { OrgUnitsModule } from './org-units/org-units.module.js';
+import { PortalModule } from './portal/portal.module.js';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { OrgUnitsModule } from './org-units/org-units.module.js';
     RetentionPolicyModule,
     SebModule,
     OrgUnitsModule,
+    PortalModule,
   ],
 
   providers: [
