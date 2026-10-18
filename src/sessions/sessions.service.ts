@@ -14,6 +14,8 @@ import type {
 // import { JwtService } from '@nestjs/jwt';
 // import { ConfigService } from '@nestjs/config';
 
+const LOGIN_OPENS_BEFORE_START_MINUTES = 5;
+
 const AUTO_GRADED_TYPES: QuestionType[] = [
   QuestionType.TRUE_FALSE,
   QuestionType.MULTIPLE_CHOICE,
@@ -60,8 +62,9 @@ export class SessionsService {
     if (!exam.scheduledStart || !exam.durationMinutes) {
       throw AppException.unauthorized('Exam is not fully configured.');
     }
-    if (now < exam.scheduledStart) {
-      throw AppException.unauthorized('Exam has not started yet.');
+    const fiveMinutesBeforeStart = exam.scheduledStart!.getTime() - LOGIN_OPENS_BEFORE_START_MINUTES * 60_000;
+    if (now.getTime() < fiveMinutesBeforeStart) {
+      throw AppException.unauthorized('Login has not started yet.');
     }
     if (now > otp.expiresAt) {
       throw AppException.unauthorized('Login window has expired.');
@@ -100,32 +103,27 @@ export class SessionsService {
     const questionOrder = this.shuffle(examQuestions.map((q) => q.id));
     const optionOrder = this.buildOptionOrder(examQuestions);
 
-    const endsAt = new Date(now.getTime() + exam.durationMinutes * 60_000);
-
     const session = await this.prisma.examSession.create({
       data: {
         examId: exam.id,
         studentId: student.id,
-        status: SessionStatus.IN_PROGRESS,
-        startedAt: now,
-        endsAt,
+        status: SessionStatus.NOT_STARTED,
+        startedAt: null,
+        endsAt: null,
         questionOrder: questionOrder as Prisma.InputJsonValue,
         optionOrder: optionOrder as unknown as Prisma.InputJsonValue,
         lastPolledAt: now,
       },
     });
 
-    const safeQuestions = questionOrder.map((id) => {
-      const q = examQuestions.find((x) => x.id === id)!;
-      const { correctAnswer: _omit, ...safe } = q;
-      return { ...safe, options: this.applyOptionOrder(q, optionOrder) };
-    });
-
     return {
       sessionToken: session.id,
       exam: { id: exam.id, title: exam.title, examType: exam.examType },
-      endsAt: session.endsAt,
-      examQuestions: safeQuestions,
+      startsAt: exam.scheduledStart!.toISOString(),
+      serverNow: now.toISOString(),
+      durationMinutes: exam.durationMinutes,
+      endsAt: null,
+      examQuestions: [],
       student: { name: student.name, studentId: student.studentId },
     };
   }
@@ -160,9 +158,21 @@ export class SessionsService {
       data: { lastPolledAt: now },
     });
 
+    if (session.status === SessionStatus.NOT_STARTED) {
+      const exam = await this.prisma.exam.findUnique({
+        where: { id: session.examId },
+      });
+      if (!exam) throw AppException.notFound('Exam not found.');
+      return {
+        status: session.status,
+        startsAt: exam.scheduledStart!.toISOString(),
+        serverNow: new Date().toISOString(),
+        durationMinutes: exam.durationMinutes,
+      };
+    }
+
     if (
-      session.status !== SessionStatus.IN_PROGRESS &&
-      session.status !== SessionStatus.NOT_STARTED
+      session.status !== SessionStatus.IN_PROGRESS
     ) {
       const summary = await this.computeSummary(session.id, session.examId);
       return {
@@ -238,6 +248,10 @@ export class SessionsService {
     });
     if (!session) throw AppException.notFound('Session not found.');
 
+    if (session.status === SessionStatus.NOT_STARTED) {
+      throw AppException.conflict('The exam has not been started.');
+    }
+
     if (
       session.status === SessionStatus.SUBMITTED ||
       session.status === SessionStatus.FORCE_SUBMITTED ||
@@ -274,7 +288,92 @@ export class SessionsService {
     };
   }
 
-  // ---------------- HELPERS ----------------
+  // ---------------- START ----------------
+  async startSession(id: string): Promise<{
+    status: 'IN_PROGRESS';
+    endsAt: Date;
+    serverNow: string;
+    examQuestions: NonNullable<unknown>;
+  }> {
+    const session = await this.prisma.examSession.findUnique({
+      where: { id },
+    });
+    if (!session) throw AppException.notFound('Session not found.');
+
+    const now = new Date();
+
+    if (session.status === SessionStatus.IN_PROGRESS) {
+      const exam = await this.prisma.exam.findUnique({
+        where: { id: session.examId },
+      });
+      const questions = await this.getSessionQuestions(session);
+      return {
+        status: session.status,
+        endsAt: session.endsAt!,
+        serverNow: now.toISOString(),
+        examQuestions: questions,
+      };
+    }
+
+    if (
+      session.status === SessionStatus.SUBMITTED ||
+      session.status === SessionStatus.FORCE_SUBMITTED ||
+      session.status === SessionStatus.EXPIRED
+    ) {
+      throw AppException.conflict('This session has already ended.');
+    }
+
+    if (session.status === SessionStatus.NOT_STARTED) {
+      const exam = await this.prisma.exam.findUnique({
+        where: { id: session.examId },
+        include: { examOTP: true },
+      });
+      if (!exam) throw AppException.notFound('Exam not found.');
+      if (!exam.scheduledStart || !exam.durationMinutes) {
+        throw AppException.internal('Exam is not fully configured.');
+      }
+
+      if (now < exam.scheduledStart) {
+        throw AppException.forbidden('The exam has not opened yet.');
+      }
+      if (now > exam.examOTP!.expiresAt) {
+        throw AppException.unauthorized('Login window has expired.');
+      }
+
+      const updated = await this.prisma.examSession.updateMany({
+        where: {
+          id,
+          status: SessionStatus.NOT_STARTED,
+        },
+        data: {
+          status: SessionStatus.IN_PROGRESS,
+          startedAt: now,
+          endsAt: new Date(now.getTime() + exam.durationMinutes * 60_000),
+          lastPolledAt: now,
+        },
+      });
+
+      if (updated.count === 0) {
+        // Already started by another tab/request; re-fetch and return current state
+        return this.startSession(id);
+      }
+
+      const questions = await this.getSessionQuestions({
+        examId: session.examId,
+        questionOrder: session.questionOrder,
+        optionOrder: session.optionOrder,
+      });
+      const endsAt = new Date(now.getTime() + exam.durationMinutes * 60_000);
+      return {
+        status: SessionStatus.IN_PROGRESS,
+        endsAt,
+        serverNow: now.toISOString(),
+        examQuestions: questions,
+      };
+    }
+
+    throw AppException.notFound('Session not found.');
+  }
   private async getSessionQuestions(session: {
     examId: string;
     questionOrder: unknown;

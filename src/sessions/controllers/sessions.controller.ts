@@ -36,4 +36,10 @@ export class SessionsController {
   submit(@Param('id', ParseUUIDPipe) id: string) {
     return this.sessionsService.submit(id);
   }
+
+  @Post(':id/start')
+  @HttpCode(HttpStatus.OK)
+  start(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessionsService.startSession(id);
+  }
 }
