@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
-import { QuestionType, StaffRole } from '../generated/prisma/client.js';
+import { Prisma, QuestionType, StaffRole } from '../generated/prisma/client.js';
 import { questionInputSchema, QuestionInput } from './validation/questions.dto.js';
 
 interface ParentRef {
@@ -21,17 +21,21 @@ export class QuestionsService {
   async createMany(parent: ParentRef, type: QuestionType, questions: QuestionInput[], caller: CallerContext) {
     await this.assertOwnsParent(parent, caller);
 
-    const created = await this.prisma.question.createManyAndReturn({
-      data: questions.map((q) => ({
-        courseId: parent.courseId,
-        cohortId: parent.cohortId,
-        type,
-        prompt: q.prompt,
-        options: 'options' in q ? q.options : undefined,
-        correctAnswer: 'correctAnswer' in q ? q.correctAnswer : undefined,
-        points: q.points,
-        createdById: caller.staffId,
-      })),
+    const created = await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveParent(tx, parent, caller);
+      return tx.question.createManyAndReturn({
+        data: questions.map((q) => ({
+          courseId: parent.courseId,
+          cohortId: parent.cohortId,
+          type,
+          prompt: q.prompt,
+          options: 'options' in q ? q.options : undefined,
+          correctAnswer: 'correctAnswer' in q ? q.correctAnswer : undefined,
+          correctAnswerCount: 'correctAnswerCount' in q ? q.correctAnswerCount : 1,
+          points: q.points,
+          createdById: caller.staffId,
+        })),
+      });
     });
 
     return { questions: created };
@@ -57,6 +61,9 @@ export class QuestionsService {
       prompt: patch.prompt ?? question.prompt,
       options: 'options' in patch ? patch.options : question.options,
       correctAnswer: 'correctAnswer' in patch ? patch.correctAnswer : question.correctAnswer,
+      correctAnswerCount: 'correctAnswerCount' in patch
+        ? patch.correctAnswerCount ?? question.correctAnswerCount
+        : question.correctAnswerCount,
       points: patch.points ?? question.points,
     });
 
@@ -64,6 +71,7 @@ export class QuestionsService {
       prompt: candidate.prompt,
       options: 'options' in candidate ? candidate.options : undefined,
       correctAnswer: 'correctAnswer' in candidate ? candidate.correctAnswer : undefined,
+      correctAnswerCount: 'correctAnswerCount' in candidate ? candidate.correctAnswerCount : undefined,
       points: candidate.points,
     };
 
@@ -129,6 +137,26 @@ export class QuestionsService {
       return;
     }
 
+    throw AppException.badRequest('Either courseId or cohortId must be provided.');
+  }
+
+  private async lockActiveParent(tx: Prisma.TransactionClient, parent: ParentRef, caller: CallerContext) {
+    if (parent.courseId) {
+      await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "Course" WHERE id = ${parent.courseId} FOR UPDATE`);
+      const course = await tx.course.findUnique({ where: { id: parent.courseId } });
+      if (!course) throw AppException.notFound('Course not found.');
+      if (course.instructorId !== caller.staffId) throw AppException.forbidden();
+      if (course.status === 'ARCHIVED') throw AppException.conflict('This course is archived — no new questions can be added.');
+      return;
+    }
+    if (parent.cohortId) {
+      await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "Cohort" WHERE id = ${parent.cohortId} FOR UPDATE`);
+      const cohort = await tx.cohort.findUnique({ where: { id: parent.cohortId } });
+      if (!cohort) throw AppException.notFound('Cohort not found.');
+      if (cohort.coordinatorId !== caller.staffId) throw AppException.forbidden();
+      if (cohort.status === 'ARCHIVED') throw AppException.conflict('This cohort is archived — no new questions can be added.');
+      return;
+    }
     throw AppException.badRequest('Either courseId or cohortId must be provided.');
   }
 }

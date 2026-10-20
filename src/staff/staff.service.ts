@@ -7,7 +7,7 @@ import { isAdminRole, assertOwnsOrIsAdmin } from '../common/utils/ownership.util
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
-import { StaffRole } from '../generated/prisma/client.js';
+import { Prisma, StaffRole } from '../generated/prisma/client.js';
 import { AuthService } from '../auth/auth.service.js';
 import { EmailService } from '../email/email.service.js';
 import { OrgUnitsService } from '../org-units/org-units.service.js';
@@ -201,11 +201,13 @@ export class StaffService {
       if (conflict) throw AppException.conflict('A staff account with this email already exists.');
     }
 
-    const isDeactivation = dto.isActive === false;
-    const isReactivation = dto.isActive === true && existing.isActive === false;
-    const isEmailChange = dto.email !== undefined && dto.email !== existing.email;
-
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "StaffAccount" WHERE id = ${id} FOR UPDATE`);
+      const current = await tx.staffAccount.findUnique({ where: { id } });
+      if (!current) throw AppException.notFound('Staff member not found.');
+      const isDeactivation = dto.isActive === false && current.isActive;
+      const isReactivation = dto.isActive === true && !current.isActive;
+      const isEmailChange = dto.email !== undefined && dto.email !== current.email;
       const result = await tx.staffAccount.update({
         where: { id },
         data: {
@@ -225,7 +227,7 @@ export class StaffService {
             action: AuditAction.STAFF_DEACTIVATED,
             entityType: 'StaffAccount',
             entityId: id,
-            metadata: { displayName: existing.name },
+            metadata: { displayName: current.name },
           },
           tx,
         );
@@ -237,7 +239,7 @@ export class StaffService {
             action: AuditAction.STAFF_REACTIVATED,
             entityType: 'StaffAccount',
             entityId: id,
-            metadata: { displayName: existing.name },
+            metadata: { displayName: current.name },
           },
           tx,
         );

@@ -9,7 +9,9 @@ import type { JwtPayload } from './validation/auth.interface.js';
 import { EmailService } from '../email/email.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
-import { Prisma, StaffAccount } from '../generated/prisma/client.js';
+import { ExamStatus, Prisma, StaffAccount, SessionStatus, StaffRole } from '../generated/prisma/client.js';
+import { randomUUID } from 'node:crypto';
+import { SEB_HANDSHAKE_AUDIENCE, SEB_HANDSHAKE_ISSUER } from '../seb/seb.constants.js';
 
 @Injectable()
 export class AuthService {
@@ -22,40 +24,64 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string) {
-    const staff = await this.prisma.staffAccount.findUnique({
-      where: { email },
-      include: { orgUnit: { select: { id: true, name: true } } },
+    return this.prisma.$transaction(async (tx) => {
+      const found = await tx.staffAccount.findUnique({ where: { email } });
+      if (!found) throw AppException.unauthorized('Invalid credentials.');
+      await tx.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`SELECT id FROM "StaffAccount" WHERE id = ${found.id} FOR UPDATE`,
+      );
+      const staff = await tx.staffAccount.findUnique({
+        where: { id: found.id },
+        include: { orgUnit: { select: { id: true, name: true } } },
+      });
+      if (!staff) throw AppException.unauthorized('Invalid credentials.');
+      if (!staff.isActive) {
+        throw AppException.unauthorized('Invalid credentials.');
+      }
+
+      const matches = await bcryptCompare(password, staff.passwordHash);
+      if (!matches) throw AppException.unauthorized('Invalid credentials.');
+
+      const { accessToken, rawRefreshToken } = await this.issueSession(staff, tx);
+      const { passwordHash: _omit, ...safeStaff } = staff;
+      return { accessToken, rawRefreshToken, staff: safeStaff };
     });
-    if (!staff) throw AppException.unauthorized('Invalid credentials.');
-    if (!staff.isActive) {
-      throw AppException.unauthorized('Your account is inactive. Please contact your administrator.');
-    }
-
-    const matches = await bcryptCompare(password, staff.passwordHash);
-    if (!matches) throw AppException.unauthorized('Invalid credentials.');
-
-    const { accessToken, rawRefreshToken } = await this.issueSession(staff);
-
-    const { passwordHash: _omit, ...safeStaff } = staff;
-    return { accessToken, rawRefreshToken, staff: safeStaff };
   }
 
   async refresh(rawRefreshToken: string | undefined) {
     if (!rawRefreshToken) throw AppException.unauthorized();
 
     const tokenHash = sha256Hash(rawRefreshToken);
-    const existing = await this.prisma.refreshToken.findFirst({
-      where: { tokenHash, revokedAt: null, expiresAt: { gt: new Date() } },
-    });
-    if (!existing) throw AppException.unauthorized('Session expired. Please log in again.');
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const existing = await tx.refreshToken.findFirst({
+        where: { tokenHash, revokedAt: null, expiresAt: { gt: now } },
+      });
+      if (!existing) return { kind: 'invalid' as const };
 
-    await this.prisma.refreshToken.update({
-      where: { id: existing.id },
-      data: { revokedAt: new Date() },
+      // Staff-row locking serializes rotation with deactivation, which updates
+      // the same row before revoking every session in its transaction.
+      await tx.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`SELECT id FROM "StaffAccount" WHERE id = ${existing.staffId} FOR UPDATE`,
+      );
+      const staff = await tx.staffAccount.findUnique({ where: { id: existing.staffId } });
+      if (!staff || !staff.isActive) {
+        await this.revokeAllSessions(existing.staffId, tx);
+        return { kind: 'inactive' as const };
+      }
+
+      const consumed = await tx.refreshToken.updateMany({
+        where: { id: existing.id, tokenHash, revokedAt: null, expiresAt: { gt: now } },
+        data: { revokedAt: now },
+      });
+      if (consumed.count !== 1) return { kind: 'invalid' as const };
+
+      return { kind: 'rotated' as const, session: await this.issueSession(staff, tx) };
     });
 
-    const staff = await this.prisma.staffAccount.findUniqueOrThrow({ where: { id: existing.staffId } });
-    return this.issueSession(staff);
+    if (outcome.kind === 'inactive') throw AppException.unauthorized('Invalid or expired session.');
+    if (outcome.kind === 'invalid') throw AppException.unauthorized('Session expired. Please log in again.');
+    return outcome.session;
   }
 
   async logout(rawRefreshToken: string | undefined) {
@@ -64,6 +90,26 @@ export class AuthService {
       where: { tokenHash: sha256Hash(rawRefreshToken), revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  async issueSebHandshakeToken() {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 5 * 60_000);
+    const id = randomUUID();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.sebHandshakeToken.deleteMany({ where: { expiresAt: { lt: now } } });
+      await tx.sebHandshakeToken.create({ data: { id, expiresAt } });
+    });
+    return this.jwtService.sign(
+      { type: 'seb-handshake', jti: id },
+      {
+        secret: this.configService.getOrThrow<string>('seb.handshakeSecret'),
+        expiresIn: '5m',
+        issuer: SEB_HANDSHAKE_ISSUER,
+        audience: SEB_HANDSHAKE_AUDIENCE,
+        algorithm: 'HS256',
+      },
+    );
   }
 
   async me(staffId: string) {
@@ -184,23 +230,27 @@ export class AuthService {
     await tx.refreshToken.updateMany({ where: { staffId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
-  private async issueSession(staff: Pick<StaffAccount, 'id' | 'role' | 'orgUnitId'>) {
-    const payload: JwtPayload = {
-      sub: staff.id,
-      role: staff.role,
-      orgUnitId: staff.orgUnitId,
-    };
-    const accessToken = this.jwtService.sign(payload);
-
+  private async issueSession(
+    staff: Pick<StaffAccount, 'id' | 'role' | 'orgUnitId'>,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ) {
     const rawRefreshToken = generateOpaqueToken();
     const refreshExpiresInMs = this.configService.getOrThrow<number>('jwt.refreshExpiresInMs');
-    await this.prisma.refreshToken.create({
+    const refreshToken = await db.refreshToken.create({
       data: {
         staffId: staff.id,
         tokenHash: sha256Hash(rawRefreshToken),
         expiresAt: new Date(Date.now() + refreshExpiresInMs),
       },
     });
+
+    const payload: JwtPayload = {
+      sub: staff.id,
+      sid: refreshToken.id,
+      role: staff.role,
+      orgUnitId: staff.orgUnitId,
+    };
+    const accessToken = this.jwtService.sign(payload);
 
     return { accessToken, rawRefreshToken };
   }
@@ -217,5 +267,64 @@ export class AuthService {
       throw AppException.unauthorized('Incorrect password.');
     }
     return assignment.invigilator;
+  }
+
+  async authenticateAssignedInvigilator(sessionToken: string, email: string, password: string) {
+    const session = await this.prisma.examSession.findUnique({
+      where: { id: sessionToken },
+      select: { examId: true },
+    });
+    if (!session) {
+      throw AppException.unauthorized('Invalid invigilator credentials for this exam session.');
+    }
+    const invigilator = await this.authenticateAssignedInvigilatorForExam(session.examId, email, password);
+    await this.auditService.log({
+      actorId: invigilator.id,
+      action: AuditAction.SEB_EXIT_AUTHORIZED,
+      entityType: 'ExamSession',
+      entityId: sessionToken,
+      metadata: { authorizationContext: 'active-session' },
+    });
+    return invigilator;
+  }
+
+  async authenticateAssignedInvigilatorForExamOtp(otp: string, email: string, password: string) {
+    const examOtp = await this.prisma.examOTP.findFirst({
+      where: { code: otp, expiresAt: { gt: new Date() } },
+      include: { exam: { select: { id: true, status: true } } },
+    });
+    if (!examOtp || examOtp.exam.status !== ExamStatus.RELEASED) {
+      throw AppException.unauthorized('Invalid invigilator credentials or exam access code.');
+    }
+    const invigilator = await this.authenticateAssignedInvigilatorForExam(examOtp.exam.id, email, password);
+    await this.auditService.log({
+      actorId: invigilator.id,
+      action: AuditAction.SEB_EXIT_AUTHORIZED,
+      entityType: 'Exam',
+      entityId: examOtp.exam.id,
+      metadata: { authorizationContext: 'exam-access-code' },
+    });
+    return invigilator;
+  }
+
+  private async authenticateAssignedInvigilatorForExam(examId: string, email: string, password: string) {
+    const assignment = await this.prisma.examInvigilator.findFirst({
+      where: { examId },
+      include: { invigilator: true },
+    });
+    if (
+      !assignment ||
+      !assignment.invigilator.isActive ||
+      ![StaffRole.INVIGILATOR, StaffRole.INSTRUCTOR, StaffRole.EXIT_EXAM_COORDINATOR].some(
+        (role) => role === assignment.invigilator.role,
+      ) ||
+      assignment.invigilator.email.toLowerCase() !== email.trim().toLowerCase()
+    ) {
+      throw AppException.unauthorized('Invalid invigilator credentials for this exam session.');
+    }
+    if (!(await bcryptCompare(password, assignment.invigilator.passwordHash))) {
+      throw AppException.unauthorized('Invalid invigilator credentials for this exam session.');
+    }
+    return { id: assignment.invigilator.id, name: assignment.invigilator.name };
   }
 }

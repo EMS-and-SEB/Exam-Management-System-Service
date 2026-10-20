@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { JwtPayload } from '../auth/validation/auth.interface.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { ResultsExportService } from '../common/results-export/results-export.service.js';
-import { ExamStatus, SessionStatus } from '../generated/prisma/client.js';
+import { ExamStatus, QuestionType, SessionStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { GradeAnswerDto } from './validation/grading.dto.js';
 
@@ -173,6 +173,10 @@ export class GradingService {
       throw AppException.forbidden(
         'Cannot grade answers for a non-terminal session.',
       );
+    }
+
+    if (answer.examQuestion.type !== QuestionType.WORKOUT) {
+      throw AppException.badRequest('Only workout answers can be manually graded.');
     }
 
     if (dto.pointsAwarded > answer.examQuestion.points) {

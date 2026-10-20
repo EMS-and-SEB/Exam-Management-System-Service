@@ -1,26 +1,48 @@
 import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
 import { Public } from '../auth/decorators/auth.decorator.js';
 import { SebClientKeyGuard } from './seb-client-key.guard.js';
-import { HandshakeDto } from './validation/seb.dto.js';
+import { HandshakeDto, VerifyExitDto } from './validation/seb.dto.js';
+import { AuthService } from '../auth/auth.service.js';
+import { Throttle } from '@nestjs/throttler';
+import { AppException } from '../common/exceptions/app-exceptions.js';
+import { SessionsService } from '../sessions/sessions.service.js';
 
 @Controller('seb')
 export class SebController {
   constructor(
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
+    private readonly authService: AuthService,
+    private readonly sessionsService: SessionsService,
   ) {}
 
   @Public()
   @UseGuards(SebClientKeyGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('handshake')
   @HttpCode(HttpStatus.OK)
   handshake(@Body() _dto: HandshakeDto) {
-    const handshakeToken = this.jwtService.sign(
-      { type: 'seb-handshake' },
-      { secret: this.configService.getOrThrow<string>('seb.handshakeSecret'), expiresIn: '30m' },
-    );
-    return { success: true, handshakeToken };
+    return this.authService.issueSebHandshakeToken().then((handshakeToken) => ({ success: true, handshakeToken }));
+  }
+
+  @Public()
+  @UseGuards(SebClientKeyGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('verify-exit')
+  @HttpCode(HttpStatus.OK)
+  async verifyExit(@Body() dto: VerifyExitDto) {
+    if (dto.sessionToken) {
+      const invigilator = await this.authService.authenticateAssignedInvigilator(
+        dto.sessionToken,
+        dto.email,
+        dto.password,
+      );
+      const exit = await this.sessionsService.exitByAuthorizedInvigilator(dto.sessionToken, invigilator.id);
+      return { authorized: true, ...exit };
+    } else if (dto.examOtp) {
+      await this.authService.authenticateAssignedInvigilatorForExamOtp(dto.examOtp, dto.email, dto.password);
+    } else {
+      // The DTO refinement makes this unreachable for HTTP requests.
+      throw AppException.badRequest('An exam session or access code is required.');
+    }
+    return { authorized: true };
   }
 }

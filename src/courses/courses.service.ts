@@ -4,7 +4,7 @@ import { StudentsService } from '../students/students.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
 import { findNameMismatches, parseRosterCsv } from '../common/utils/csv-parser.util.js';
-import { StaffRole, CourseStatus, SessionStatus } from '../generated/prisma/client.js';
+import { Prisma, StaffRole, CourseStatus, SessionStatus } from '../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/audit.const.js';
 import { OrgUnitsService } from '../org-units/org-units.service.js';
@@ -62,9 +62,17 @@ export class CoursesService {
   async update(id: string, data: { name?: string; instructorId?: string; status?: CourseStatus }, caller: CallerContext) {
     const course = await this.assertOwnsCourse(id, caller);
     if (data.instructorId) await this.assertAssignableInstructor(data.instructorId, course.orgUnitId);
-    const isArchiving = data.status === 'ARCHIVED' && course.status !== 'ARCHIVED';
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "Course" WHERE id = ${id} FOR UPDATE`);
+      const current = await tx.course.findUnique({ where: { id } });
+      if (!current) throw AppException.notFound('Course not found.');
+      if (current.status === CourseStatus.ARCHIVED && data.instructorId) {
+        throw AppException.conflict('Staff cannot be reassigned while a course is archived.');
+      }
+      const isArchiving = data.status === CourseStatus.ARCHIVED && current.status !== CourseStatus.ARCHIVED;
+      const isRestoring = data.status === CourseStatus.ACTIVE && current.status === CourseStatus.ARCHIVED;
+      if (isArchiving) await this.assertNoOpenActivities(id, tx);
       const updated = await tx.course.update({ where: { id }, data });
       if (isArchiving) {
         await this.auditService.log(
@@ -78,12 +86,19 @@ export class CoursesService {
         tx,
         );
       }
+      if (isRestoring) {
+        await this.auditService.log(
+          { actorId: caller.staffId, action: AuditAction.COURSE_RESTORED, entityType: 'Course', entityId: id, metadata: { displayName: updated.name } },
+          tx,
+        );
+      }
       return updated;
     });
   }
 
   async enrollOne(courseId: string, studentId: string, name: string, caller: CallerContext) {
-    await this.assertOwnsCourse(courseId, caller);
+    const course = await this.assertOwnsCourse(courseId, caller);
+    this.assertCourseActive(course.status);
     const student = await this.studentsService.findOrCreateByStudentId(studentId, name);
 
     const existing = await this.prisma.enrollment.findFirst({
@@ -94,21 +109,23 @@ export class CoursesService {
       if (!existing.deletedAt) {
         throw AppException.conflict('This student is already enrolled in this course.');
       }
-      const enrollment = await this.prisma.enrollment.update({
-        where: { id: existing.id },
-        data: { deletedAt: null },
+      const enrollment = await this.prisma.$transaction(async (tx) => {
+        await this.lockActiveCourse(tx, courseId, caller.staffId);
+        return tx.enrollment.update({ where: { id: existing.id }, data: { deletedAt: null } });
       });
       return { enrollment };
     }
 
-    const enrollment = await this.prisma.enrollment.create({
-      data: { courseId, studentId: student.id },
+    const enrollment = await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveCourse(tx, courseId, caller.staffId);
+      return tx.enrollment.create({ data: { courseId, studentId: student.id } });
     });
     return { enrollment };
   }
 
   async enrollSelected(courseId: string, studentIds: string[], caller: CallerContext) {
-    await this.assertOwnsCourse(courseId, caller);
+    const course = await this.assertOwnsCourse(courseId, caller);
+    this.assertCourseActive(course.status);
 
     const uniqueIds = [...new Set(studentIds)];
 
@@ -121,23 +138,22 @@ export class CoursesService {
     const knownIds = new Set(existing.map((e) => e.studentId));
     const toCreate = uniqueIds.filter((id) => !knownIds.has(id));
 
-    await this.prisma.$transaction([
-      ...(removedRowIds.length > 0
-        ? [this.prisma.enrollment.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } })]
-        : []),
-      ...(toCreate.length > 0
-        ? [this.prisma.enrollment.createMany({
-            data: toCreate.map((studentId) => ({ courseId, studentId })),
-            skipDuplicates: true,
-          })]
-        : []),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveCourse(tx, courseId, caller.staffId);
+      if (removedRowIds.length > 0) {
+        await tx.enrollment.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } });
+      }
+      if (toCreate.length > 0) {
+        await tx.enrollment.createMany({ data: toCreate.map((studentId) => ({ courseId, studentId })), skipDuplicates: true });
+      }
+    });
 
     return { enrolled: removedRowIds.length + toCreate.length, alreadyEnrolled: activeCount };
   }
 
   async enrollBulk(courseId: string, file: Express.Multer.File, caller: CallerContext) {
-    await this.assertOwnsCourse(courseId, caller);
+    const course = await this.assertOwnsCourse(courseId, caller);
+    this.assertCourseActive(course.status);
     const { rows, errors } = parseRosterCsv(file.buffer);
     if (rows.length === 0) return { created: 0, alreadyExisted: 0, enrolled: 0, nameMismatches: [], errors };
 
@@ -153,6 +169,7 @@ export class CoursesService {
     ).values()];
 
     const { created, enrolled } = await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveCourse(tx, courseId, caller.staffId);
       const createdStudents = newRows.length > 0
         ? await tx.studentDirectory.createManyAndReturn({
             data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
@@ -255,6 +272,39 @@ export class CoursesService {
     }
     if (instructor.orgUnitId !== orgUnitId) {
       throw AppException.badRequest('The instructor must belong to the selected unit.');
+    }
+  }
+
+  private assertCourseActive(status: CourseStatus) {
+    if (status === CourseStatus.ARCHIVED) {
+      throw AppException.conflict('This course is archived and cannot accept new enrollments.');
+    }
+  }
+
+  private async lockActiveCourse(tx: Prisma.TransactionClient, courseId: string, staffId: string) {
+    await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "Course" WHERE id = ${courseId} FOR UPDATE`);
+    const course = await tx.course.findUnique({ where: { id: courseId }, select: { status: true, instructorId: true } });
+    if (!course) throw AppException.notFound('Course not found.');
+    if (course.instructorId !== staffId) throw AppException.forbidden();
+    if (course.status !== CourseStatus.ACTIVE) this.assertCourseActive(CourseStatus.ARCHIVED);
+  }
+
+  private async assertNoOpenActivities(courseId: string, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    const openExam = await db.exam.findFirst({
+      where: {
+        courseId,
+        OR: [
+          { status: 'RELEASED' },
+          { status: 'DRAFT', scheduledStart: { not: null } },
+          { examSessions: { some: { status: SessionStatus.IN_PROGRESS } } },
+        ],
+      },
+      select: { id: true, title: true },
+    });
+    if (openExam) {
+      throw AppException.conflict(
+        `Course cannot be archived while exam "${openExam.title}" is scheduled or active. Close or cancel the exam first.`,
+      );
     }
   }
 }

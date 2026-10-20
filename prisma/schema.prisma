@@ -28,7 +28,6 @@ enum CohortStatus {
 enum QuestionType {
   TRUE_FALSE
   MULTIPLE_CHOICE
-  MULTIPLE_SELECT
   MATCHING
   FILL_BLANK
   WORKOUT
@@ -140,6 +139,15 @@ model RefreshToken {
   staff StaffAccount @relation(fields: [staffId], references: [id])
 }
 
+model SebHandshakeToken {
+  id        String    @id @db.Uuid
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
 model OrgUnit {
   id        String   @id @default(uuid()) @db.Uuid
   parentId  String?  @db.Uuid
@@ -197,6 +205,7 @@ model Question {
   prompt       String       @db.Text
   options      Json?
   correctAnswer Json?
+  correctAnswerCount Int @default(1)
   points       Int          @default(1) 
   createdById  String       @db.Uuid
   deletedAt    DateTime?
@@ -267,6 +276,7 @@ model ExamQuestion {
   prompt           String       @db.Text
   options          Json?
   correctAnswer    Json?
+  correctAnswerCount Int @default(1)
   points           Int
   order            Int
 
