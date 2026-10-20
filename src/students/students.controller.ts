@@ -19,10 +19,15 @@ import { StudentQueryDto } from './dto/student-query.dto.js';
 import { UpdateStudentDto } from './dto/update-student.dto.js';
 import { StudentsService } from './students.service.js';
 import type { JwtPayload } from '../auth/validation/auth.interface.js';
+import { AuthService } from '../auth/auth.service.js';
+import { StudentActivationDto } from './dto/student-activation.dto.js';
 
 @Controller('students')
 export class StudentsController {
-  constructor(private readonly studentsService: StudentsService) {}
+  constructor(
+    private readonly studentsService: StudentsService,
+    private readonly authService: AuthService,
+  ) {}
 
   @Post()
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
@@ -67,6 +72,13 @@ export class StudentsController {
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStudentDto) {
     return this.studentsService.update(id, dto);
+  }
+
+  @Post(':id/activation')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.UNIT_ADMIN)
+  async activateStudent(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StudentActivationDto) {
+    await this.authService.requestStudentActivationByAdmin(id, dto.email);
+    return { sent: true };
   }
 
   @Get(':id/enrollments')

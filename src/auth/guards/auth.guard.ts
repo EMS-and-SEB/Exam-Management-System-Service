@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import { AppException } from '../../common/exceptions/app-exceptions.js';
 import { IS_PUBLIC_KEY } from '../decorators/auth.decorator.js';
-import type { JwtPayload } from '../validation/auth.interface.js';
+import type { AuthenticatedUser, JwtPayload, StudentJwtPayload } from '../validation/auth.interface.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { StaffRole } from '../../generated/prisma/client.js';
 
@@ -39,14 +39,35 @@ export class AuthGuard implements CanActivate {
       throw AppException.unauthorized('Invalid or expired token.');
     }
     const claims = decoded as Record<string, unknown>;
-    if (
-      typeof claims.sub !== 'string' || !UUID_PATTERN.test(claims.sub) ||
-      typeof claims.sid !== 'string' || !UUID_PATTERN.test(claims.sid) ||
-      typeof claims.orgUnitId !== 'string' || !UUID_PATTERN.test(claims.orgUnitId) ||
-      typeof claims.role !== 'string' || !Object.values(StaffRole).includes(claims.role as StaffRole)
-    ) {
+    if (typeof claims.sub !== 'string' || !UUID_PATTERN.test(claims.sub) ||
+      typeof claims.sid !== 'string' || !UUID_PATTERN.test(claims.sid)) {
       throw AppException.unauthorized('Invalid or expired token.');
     }
+
+    if (claims.userType === 'student') {
+      if (claims.role !== 'STUDENT') throw AppException.unauthorized('Invalid or expired token.');
+      const studentUser = claims as unknown as StudentJwtPayload;
+      const session = await this.prisma.studentRefreshToken.findFirst({
+        where: {
+          id: studentUser.sid,
+          studentId: studentUser.sub,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        select: { student: { select: { isActive: true } } },
+      });
+      if (!session?.student.isActive) {
+        throw AppException.unauthorized('Your account session is inactive or has been revoked. Please sign in again.');
+      }
+      request.user = studentUser;
+      return true;
+    }
+
+    if (
+      (claims.userType !== undefined && claims.userType !== 'staff') ||
+      typeof claims.orgUnitId !== 'string' || !UUID_PATTERN.test(claims.orgUnitId) ||
+      typeof claims.role !== 'string' || !Object.values(StaffRole).includes(claims.role as StaffRole)
+    ) throw AppException.unauthorized('Invalid or expired token.');
     const user = claims as unknown as JwtPayload;
 
     const session = await this.prisma.refreshToken.findFirst({

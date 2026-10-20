@@ -5,9 +5,14 @@ const uuid = 'd9428888-122b-4c21-a4e2-2e9a0303c099';
 const sessionId = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const orgUnitId = '3f8f9f56-6d7c-4db7-8b57-d8b7b6d8cfd2';
 
-function setup(claims: unknown, session: unknown = { staff: { isActive: true } }) {
+function setup(
+  claims: unknown,
+  session: unknown = { staff: { isActive: true } },
+  studentSession: unknown = { student: { isActive: true } },
+) {
   const verify = vi.fn(() => claims);
   const findFirst = vi.fn().mockResolvedValue(session);
+  const findStudentFirst = vi.fn().mockResolvedValue(studentSession);
   const request: { headers: { authorization: string }; user?: unknown } = {
     headers: { authorization: 'Bearer token' },
   };
@@ -19,9 +24,9 @@ function setup(claims: unknown, session: unknown = { staff: { isActive: true } }
   const guard = new AuthGuard(
     { verify } as never,
     { getAllAndOverride: () => false } as never,
-    { refreshToken: { findFirst } } as never,
+    { refreshToken: { findFirst }, studentRefreshToken: { findFirst: findStudentFirst } } as never,
   );
-  return { guard, verify, findFirst, request, context: context as never };
+  return { guard, verify, findFirst, findStudentFirst, request, context: context as never };
 }
 
 function claims(overrides: Record<string, unknown> = {}) {
@@ -72,5 +77,24 @@ describe('AuthGuard session claim validation', () => {
     const { guard, context, request } = setup(tokenClaims);
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(request.user).toEqual(tokenClaims);
+  });
+
+  it('validates student sessions against the student refresh-token table', async () => {
+    const studentClaims = { sub: uuid, sid: sessionId, role: 'STUDENT', userType: 'student' };
+    const { guard, context, request, findStudentFirst, findFirst } = setup(studentClaims);
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(findStudentFirst).toHaveBeenCalledWith({
+      where: { id: sessionId, studentId: uuid, revokedAt: null, expiresAt: { gt: expect.any(Date) } },
+      select: { student: { select: { isActive: true } } },
+    });
+    expect(findFirst).not.toHaveBeenCalled();
+    expect(request.user).toEqual(studentClaims);
+  });
+
+  it('rejects inactive student sessions', async () => {
+    const studentClaims = { sub: uuid, sid: sessionId, role: 'STUDENT', userType: 'student' };
+    const { guard, context } = setup(studentClaims, undefined, { student: { isActive: false } });
+    await expect(guard.canActivate(context)).rejects.toThrow();
   });
 });

@@ -48,3 +48,9 @@ If you need to change the schema by any means, you will have to run "migrate dev
 ```bash
 npm run start
 ```
+
+## Student portal accounts
+
+Student portal accounts use the existing student-directory records. Undergraduate and graduate records remain separate accounts, including when records appear to belong to the same person. The system does not merge accounts or link them based on names or email addresses. Undergraduate self-service activation supports IDs in the `UGR/####/##` format and generates `<firstname>.ugr-####-##@aau.edu.et`, where `firstname` is the first word in the directory name. Graduate activation is managed manually by an authorized administrator.
+
+If the institution later requires one person to access multiple academic records through a single account, that identity-linking policy must be established before account linking is implemented. Until then, each academic record is activated and authenticated independently. Portal activation does not change the existing examination-entry process, which continues to use student IDs and examination OTPs.

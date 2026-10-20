@@ -45,4 +45,31 @@ export class SebController {
     }
     return { authorized: true };
   }
+
+  @Public()
+  @UseGuards(SebClientKeyGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('verify-return')
+  @HttpCode(HttpStatus.OK)
+  async verifyReturn(@Body() dto: VerifyExitDto) {
+    if (dto.sessionToken) {
+      await this.authService.authenticateAssignedInvigilator(
+        dto.sessionToken,
+        dto.email,
+        dto.password,
+        'return-to-login',
+      );
+    } else if (dto.examOtp) {
+      await this.authService.authenticateAssignedInvigilatorForExamOtp(
+        dto.examOtp,
+        dto.email,
+        dto.password,
+        'return-to-login',
+      );
+    } else {
+      throw AppException.badRequest('An exam session or access code is required.');
+    }
+
+    return { authorized: true };
+  }
 }

@@ -14,6 +14,11 @@ function normalizeStudentId(studentId: string): string {
   return studentId.trim().toUpperCase();
 }
 
+function withoutPasswordHash<T extends { passwordHash: string | null }>(student: T) {
+  const { passwordHash: _passwordHash, ...safeStudent } = student;
+  return safeStudent;
+}
+
 @Injectable()
 export class StudentsService {
   constructor(
@@ -36,7 +41,7 @@ export class StudentsService {
         name: dto.name,
       },
     });
-    return student;
+    return withoutPasswordHash(student);
   }
 
   async findAll(query: StudentQueryDto) {
@@ -58,6 +63,7 @@ export class StudentsService {
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
+        select: { id: true, studentId: true, name: true, email: true, isActive: true, createdAt: true },
       }),
       this.prisma.studentDirectory.count({ where }),
     ]);
@@ -74,6 +80,7 @@ export class StudentsService {
   async findOne(id: string) {
     const student = await this.prisma.studentDirectory.findUnique({
       where: { id },
+      select: { id: true, studentId: true, name: true, email: true, isActive: true, createdAt: true },
     });
     if (!student) {
       throw AppException.notFound('Student not found.');
@@ -99,13 +106,14 @@ export class StudentsService {
       }
     }
 
-    return this.prisma.studentDirectory.update({
+    const updated = await this.prisma.studentDirectory.update({
       where: { id },
       data: {
         studentId,
         name: dto.name,
       },
     });
+    return withoutPasswordHash(updated);
   }
 
   async importStudents(fileBuffer: Buffer) {
