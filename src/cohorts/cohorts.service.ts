@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { CohortStatus, StaffRole, SessionStatus } from '../generated/prisma/client.js';
+import { CohortStatus, Prisma, StaffRole, SessionStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AppException } from '../common/exceptions/app-exceptions.js';
 import { buildOwnerScopeWhere, assertOwnsOrIsAdmin } from '../common/utils/ownership.util.js';
@@ -60,8 +60,17 @@ export class CohortsService {
   async update(id: string, data: { name?: string; coordinatorId?: string; status?: CohortStatus }, caller: CallerContext) {
     const cohort = await this.assertOwnsCohort(id, caller);
     if (data.coordinatorId) await this.assertAssignableCoordinator(data.coordinatorId, cohort.orgUnitId);
-    const isArchiving = data.status === 'ARCHIVED' && cohort.status !== 'ARCHIVED';
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "Cohort" WHERE id = ${id} FOR UPDATE`);
+      const current = await tx.cohort.findUnique({ where: { id } });
+      if (!current) throw AppException.notFound('Cohort not found.');
+      if (current.status === CohortStatus.ARCHIVED &&
+        (data.status !== CohortStatus.ACTIVE || Object.keys(data).some((key) => key !== 'status'))) {
+        throw AppException.conflict('Archived cohorts are read-only. Restore the cohort before editing it.');
+      }
+      const isArchiving = data.status === CohortStatus.ARCHIVED && current.status !== CohortStatus.ARCHIVED;
+      const isRestoring = data.status === CohortStatus.ACTIVE && current.status === CohortStatus.ARCHIVED;
+      if (isArchiving) await this.assertNoOpenActivities(id, tx);
       const updatedCohort = await tx.cohort.update({ where: { id }, data });
       if (isArchiving) {
         await this.auditService.log(
@@ -75,12 +84,19 @@ export class CohortsService {
         tx,
         );
       }
+      if (isRestoring) {
+        await this.auditService.log(
+          { actorId: caller.staffId, action: AuditAction.COHORT_RESTORED, entityType: 'Cohort', entityId: updatedCohort.id, metadata: { displayName: updatedCohort.name } },
+          tx,
+        );
+      }
       return updatedCohort;
     });
   }
 
   async addOne(cohortId: string, studentId: string, name: string, caller: CallerContext) {
-    await this.assertOwnsCohort(cohortId, caller);
+    const cohort = await this.assertOwnsCohort(cohortId, caller);
+    this.assertCohortActive(cohort.status);
     const student = await this.studentsService.findOrCreateByStudentId(studentId, name);
 
     const existing = await this.prisma.cohortMember.findFirst({
@@ -91,19 +107,23 @@ export class CohortsService {
       if (!existing.deletedAt) {
         throw AppException.conflict('This student is already a member of this cohort.');
       }
-      const member = await this.prisma.cohortMember.update({
-        where: { id: existing.id },
-        data: { deletedAt: null },
+      const member = await this.prisma.$transaction(async (tx) => {
+        await this.lockActiveCohort(tx, cohortId, caller.staffId);
+        return tx.cohortMember.update({ where: { id: existing.id }, data: { deletedAt: null } });
       });
       return { member };
     }
 
-    const member = await this.prisma.cohortMember.create({ data: { cohortId, studentId: student.id } });
+    const member = await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveCohort(tx, cohortId, caller.staffId);
+      return tx.cohortMember.create({ data: { cohortId, studentId: student.id } });
+    });
     return { member };
   }
 
   async addSelected(cohortId: string, studentIds: string[], caller: CallerContext) {
-    await this.assertOwnsCohort(cohortId, caller);
+    const cohort = await this.assertOwnsCohort(cohortId, caller);
+    this.assertCohortActive(cohort.status);
 
     const uniqueIds = [...new Set(studentIds)];
 
@@ -116,23 +136,22 @@ export class CohortsService {
     const knownIds = new Set(existing.map((m) => m.studentId));
     const toAdd = uniqueIds.filter((id) => !knownIds.has(id));
 
-    await this.prisma.$transaction([
-      ...(removedRowIds.length > 0
-        ? [this.prisma.cohortMember.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } })]
-        : []),
-      ...(toAdd.length > 0
-        ? [this.prisma.cohortMember.createMany({
-            data: toAdd.map((studentId) => ({ cohortId, studentId })),
-            skipDuplicates: true,
-          })]
-        : []),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveCohort(tx, cohortId, caller.staffId);
+      if (removedRowIds.length > 0) {
+        await tx.cohortMember.updateMany({ where: { id: { in: removedRowIds } }, data: { deletedAt: null } });
+      }
+      if (toAdd.length > 0) {
+        await tx.cohortMember.createMany({ data: toAdd.map((studentId) => ({ cohortId, studentId })), skipDuplicates: true });
+      }
+    });
 
     return { added: removedRowIds.length + toAdd.length, alreadyMember: activeCount };
   }
 
   async import(cohortId: string, file: Express.Multer.File, caller: CallerContext) {
-    await this.assertOwnsCohort(cohortId, caller);
+    const cohort = await this.assertOwnsCohort(cohortId, caller);
+    this.assertCohortActive(cohort.status);
     const { rows, errors } = parseRosterCsv(file.buffer);
     if (rows.length === 0) return { created: 0, alreadyExisted: 0, added: 0, nameMismatches: [], errors };
 
@@ -148,6 +167,7 @@ export class CohortsService {
     ).values()];
 
     const { created, added } = await this.prisma.$transaction(async (tx) => {
+      await this.lockActiveCohort(tx, cohortId, caller.staffId);
       const createdStudents = newRows.length > 0
         ? await tx.studentDirectory.createManyAndReturn({
             data: newRows.map((r) => ({ studentId: r.studentId, name: r.name })),
@@ -253,6 +273,39 @@ export class CohortsService {
     }
     if (coordinator.orgUnitId !== orgUnitId) {
       throw AppException.badRequest('The coordinator must belong to the selected unit.');
+    }
+  }
+
+  private assertCohortActive(status: CohortStatus) {
+    if (status === CohortStatus.ARCHIVED) {
+      throw AppException.conflict('This cohort is archived and cannot accept new members.');
+    }
+  }
+
+  private async lockActiveCohort(tx: Prisma.TransactionClient, cohortId: string, staffId: string) {
+    await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM "Cohort" WHERE id = ${cohortId} FOR UPDATE`);
+    const cohort = await tx.cohort.findUnique({ where: { id: cohortId }, select: { status: true, coordinatorId: true } });
+    if (!cohort) throw AppException.notFound('Cohort not found.');
+    if (cohort.coordinatorId !== staffId) throw AppException.forbidden();
+    if (cohort.status !== CohortStatus.ACTIVE) this.assertCohortActive(CohortStatus.ARCHIVED);
+  }
+
+  private async assertNoOpenActivities(cohortId: string, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    const openExam = await db.exam.findFirst({
+      where: {
+        cohortId,
+        OR: [
+          { status: 'RELEASED' },
+          { status: 'DRAFT', scheduledStart: { not: null } },
+          { examSessions: { some: { status: SessionStatus.IN_PROGRESS } } },
+        ],
+      },
+      select: { id: true, title: true },
+    });
+    if (openExam) {
+      throw AppException.conflict(
+        `Cohort cannot be archived while exam "${openExam.title}" is scheduled or active. Close or cancel the exam first.`,
+      );
     }
   }
 }

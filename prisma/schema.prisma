@@ -28,7 +28,6 @@ enum CohortStatus {
 enum QuestionType {
   TRUE_FALSE
   MULTIPLE_CHOICE
-  MULTIPLE_SELECT
   MATCHING
   FILL_BLANK
   WORKOUT
@@ -69,15 +68,21 @@ enum IncidentResolution {
 }
 
 model StudentDirectory {
-  id        String   @id @default(uuid()) @db.Uuid
-  studentId String   @unique
-  name      String
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid()) @db.Uuid
+  studentId    String   @unique
+  name         String
+  email        String?  @unique
+  passwordHash String?
+  isActive     Boolean  @default(false)
+  createdAt    DateTime @default(now())
 
-  enrollments   Enrollment[]
-  cohortMembers CohortMember[]
-  examRosters   ExamRoster[]
-  examSessions  ExamSession[]
+  enrollments           Enrollment[]
+  cohortMembers         CohortMember[]
+  examRosters           ExamRoster[]
+  examSessions          ExamSession[]
+  activationInvitations StudentActivationInvitation[]
+  passwordResets        StudentPasswordReset[]
+  refreshTokens         StudentRefreshToken[]
 }
 
 model StaffAccount {
@@ -140,6 +145,58 @@ model RefreshToken {
   staff StaffAccount @relation(fields: [staffId], references: [id])
 }
 
+model StudentActivationInvitation {
+  id        String    @id @default(uuid()) @db.Uuid
+  studentId String    @db.Uuid
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  student StudentDirectory @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, consumedAt])
+  @@index([expiresAt])
+}
+
+model StudentPasswordReset {
+  id                   String    @id @default(uuid()) @db.Uuid
+  studentId            String    @db.Uuid
+  codeHash             String
+  expiresAt            DateTime
+  consumedAt           DateTime?
+  resetTokenHash       String?
+  resetTokenExpiresAt  DateTime?
+  resetTokenConsumedAt DateTime?
+
+  student StudentDirectory @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+}
+
+model StudentRefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  studentId String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  student StudentDirectory @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, revokedAt])
+}
+
+model SebHandshakeToken {
+  id        String    @id @db.Uuid
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
 model OrgUnit {
   id        String   @id @default(uuid()) @db.Uuid
   parentId  String?  @db.Uuid
@@ -197,6 +254,7 @@ model Question {
   prompt       String       @db.Text
   options      Json?
   correctAnswer Json?
+  correctAnswerCount Int @default(1)
   points       Int          @default(1) 
   createdById  String       @db.Uuid
   deletedAt    DateTime?
@@ -267,6 +325,7 @@ model ExamQuestion {
   prompt           String       @db.Text
   options          Json?
   correctAnswer    Json?
+  correctAnswerCount Int @default(1)
   points           Int
   order            Int
 

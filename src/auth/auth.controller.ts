@@ -3,8 +3,9 @@ import type { Request, Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service.js';
-import { CurrentUser, Public } from './decorators/auth.decorator.js';
-import type { JwtPayload } from './validation/auth.interface.js';
+import { CurrentUser, Public, Roles } from './decorators/auth.decorator.js';
+import type { AuthenticatedUser } from './validation/auth.interface.js';
+import { StaffRole } from '../generated/prisma/client.js';
 import {
   LoginDto,
   PasswordResetConfirmDto,
@@ -12,6 +13,7 @@ import {
   PasswordResetVerifyDto,
   StaffInvitationDto,
   StaffInvitationCompleteDto,
+  StudentActivationRequestDto,
 } from './validation/auth.dto.js';
 
 const REFRESH_COOKIE = 'refresh_token';
@@ -52,8 +54,9 @@ export class AuthController {
   }
 
   @Get('me')
-  me(@CurrentUser() user: JwtPayload) {
-    return this.authService.me(user.sub);
+  @Roles('STUDENT', ...Object.values(StaffRole))
+  me(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.me(user);
   }
 
   @Public()
@@ -79,6 +82,15 @@ export class AuthController {
   async confirmPasswordReset(@Body() dto: PasswordResetConfirmDto) {
     await this.authService.confirmPasswordReset(dto.resetToken, dto.newPassword);
     return { success: true };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
+  @Post('student-activation/request')
+  @HttpCode(HttpStatus.OK)
+  async requestStudentActivation(@Body() dto: StudentActivationRequestDto) {
+    await this.authService.requestStudentActivation(dto.studentId);
+    return { sent: true };
   }
 
   @Public()
